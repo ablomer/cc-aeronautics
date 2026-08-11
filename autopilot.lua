@@ -1,5 +1,67 @@
 require("util")
 
+-- BearingHold steers the ship towards a navigation target by computing the
+-- bearing error and producing a PI steering output in [-1, 1].
+-- Its read() method is compatible as a MixerChannel input.
+BearingHold = {}
+
+BearingHold.GAIN       = 2 / 180   -- proportional gain; maps ±90° error to ±1.0 output
+BearingHold.I_GAIN     = 2 / 180   -- integral gain; tune as needed
+BearingHold.I_LIMIT    = 1.0       -- clamps the integral to prevent windup
+BearingHold.MIN_OUTPUT = 0.1       -- minimum effective output magnitude to overcome drag
+BearingHold.DEADBAND   = 2.0       -- degrees; bearing errors within this range are ignored
+
+function BearingHold:new(navTable)
+    local t = setmetatable({}, { __index = BearingHold })
+    t.navTable  = navTable
+    t.integral  = ClampedIntegral:new(BearingHold.I_LIMIT)
+    t.lastBearing = nil
+    return t
+end
+
+-- Seed the integral from the current bearing so the first output matches the
+-- current steering state and avoids a sudden jump on engagement.
+function BearingHold:captureState()
+    if not self.navTable.hasTarget() then return end
+    local bearing = self.navTable.getBearing()
+    bearing = ((bearing + 180) % 360) - 180
+    -- Back-calculate integral so initial output matches the proportional term.
+    -- At capture moment: output = P + I = bearing*GAIN + integral*I_GAIN
+    -- We want total = bearing*GAIN, so seed integral to 0.
+    self.integral:reset()
+end
+
+-- Returns a PI steering value in [-1, 1] based on bearing error, or 0 if no target.
+-- Compatible as a MixerChannel input read function.
+function BearingHold:read()
+    if not self.navTable.hasTarget() then
+        self.lastBearing = nil
+        self.lastOutput  = nil
+        self.integral:reset()
+        return 0
+    end
+    local bearing = self.navTable.getBearing()
+    -- Wrap to [-180, 180] so the ship always turns the short way
+    bearing = ((bearing + 180) % 360) - 180
+    self.lastBearing = bearing
+    -- Within deadband: output zero and let the integral drain
+    if math.abs(bearing) <= BearingHold.DEADBAND then
+        self.lastOutput = 0
+        return 0
+    end
+    self.integral:add(bearing)
+    local value = (bearing * BearingHold.GAIN) + (self.integral.value * BearingHold.I_GAIN)
+    value = Range:new(-1, 1):clamp(value)
+    -- Apply minimum output floor to overcome drag at small errors
+    if value > 0 and value < BearingHold.MIN_OUTPUT then
+        value = BearingHold.MIN_OUTPUT
+    elseif value < 0 and value > -BearingHold.MIN_OUTPUT then
+        value = -BearingHold.MIN_OUTPUT
+    end
+    self.lastOutput = value
+    return value
+end
+
 -- VelocityHold maintains a target velocity and computes a PI control
 -- output to drive it. Its read() method is compatible as a MixerChannel input.
 VelocityHold = {}

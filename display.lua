@@ -11,15 +11,18 @@ local COL_MANUAL   = colors.yellow
 local COL_HOLD     = colors.green
 local COL_BTN_BG   = colors.gray
 local COL_BTN_TEXT = colors.white
+local COL_NAV      = colors.cyan
 
 local BORDER_TOP = "\xc9" .. string.rep("\xcd", W - 2) .. "\xbb"
 local BORDER_MID = "\xcc" .. string.rep("\xcd", W - 2) .. "\xb9"
 local BORDER_BTM = "\xc8" .. string.rep("\xcd", W - 2) .. "\xbc"
 local BORDER_ROW = "\xba" .. string.rep(" ",    W - 2) .. "\xba"
 
--- Button hit regions (x1, x2, y) — updated each render when in hold mode
-local BTN_DEC = { x1 = 26, x2 = 30, y = 8 }  -- [ - ]
-local BTN_INC = { x1 = 32, x2 = 36, y = 8 }  -- [ + ]
+-- Button hit regions (x1, x2, y) — only active in hold mode
+local BTN_DEC   = { x1 = 26, x2 = 30, y = 8 }  -- [ - ]
+local BTN_INC   = { x1 = 32, x2 = 36, y = 8 }  -- [ + ]
+local BTN_ZERO  = { x1 = 38, x2 = 42, y = 8 }  -- [ 0 ]
+local BTN_TWO   = { x1 = 44, x2 = 48, y = 8 }  -- [ 2 ]
 
 local function drawBorderLine(term, y, line)
     term.setCursorPos(1, y)
@@ -58,14 +61,12 @@ function FlightDisplay:new()
     return t
 end
 
--- Returns "inc", "dec", or nil depending on which button was clicked.
+-- Returns the button action for a click, or nil.
 function FlightDisplay:hitTest(x, y)
-    if x >= BTN_DEC.x1 and x <= BTN_DEC.x2 and y == BTN_DEC.y then
-        return "dec"
-    end
-    if x >= BTN_INC.x1 and x <= BTN_INC.x2 and y == BTN_INC.y then
-        return "inc"
-    end
+    if x >= BTN_DEC.x1  and x <= BTN_DEC.x2  and y == BTN_DEC.y  then return "dec"  end
+    if x >= BTN_INC.x1  and x <= BTN_INC.x2  and y == BTN_INC.y  then return "inc"  end
+    if x >= BTN_ZERO.x1 and x <= BTN_ZERO.x2 and y == BTN_ZERO.y then return "zero" end
+    if x >= BTN_TWO.x1  and x <= BTN_TWO.x2  and y == BTN_TWO.y  then return "two"  end
     return nil
 end
 
@@ -76,6 +77,14 @@ function FlightDisplay:update(state)
     --   holdMode: boolean
     --   targetVelocity: number|nil (only relevant in hold mode)
     --   steeringAngle: number (-180 to 180, degrees)
+    --   navActive: boolean
+    --   navBearing: number|nil (degrees, only when navActive)
+    --   navHeading: number|nil (degrees, only when navActive)
+    --   navOutput: number|nil (steering output in [-1,1], only when navActive)
+    --   navDistance: number|nil (metres, only when navActive)
+    --   navSteering: boolean (true when autopilot is controlling steering)
+    --   propeller1Power: number (last power sent to propeller 1)
+    --   propeller2Power: number (last power sent to propeller 2)
     -- }
 
     local t = self.term
@@ -95,13 +104,19 @@ function FlightDisplay:update(state)
     -- Row 4: blank
     drawRow(t, 4)
 
-    -- Row 5: mode
+    -- Row 5: throttle mode / steering mode
     drawRow(t, 5)
-    writeLabel(t, 3, 5, "MODE")
+    writeLabel(t, 3, 5, "VELOCITY")
     if state.holdMode then
-        writeAt(t, 14, 5, "[ VELOCITY HOLD ]", COL_HOLD)
+        writeAt(t, 12, 5, "[ HOLD ]  ", COL_HOLD)
     else
-        writeAt(t, 14, 5, "[ MANUAL ]       ", COL_MANUAL)
+        writeAt(t, 12, 5, "[ MANUAL ]", COL_MANUAL)
+    end
+    writeLabel(t, 24, 5, "STEER")
+    if state.navSteering then
+        writeAt(t, 30, 5, "[ AUTO ]  ", COL_NAV)
+    else
+        writeAt(t, 30, 5, "[ MANUAL ]", COL_MANUAL)
     end
 
     -- Row 6: blank
@@ -112,28 +127,70 @@ function FlightDisplay:update(state)
     writeLabel(t, 3, 7, "VELOCITY")
     writeAt(t, 14, 7, string.format("%-10s", string.format("%.2f m/s", state.velocity)))
 
-    -- Row 8: target velocity with +/- buttons (hold mode only) or blank
+    -- Row 8: target velocity with buttons (hold mode only) or blank
     drawRow(t, 8)
     if state.holdMode and state.targetVelocity ~= nil then
         writeLabel(t, 3, 8, "TARGET  ")
         writeAt(t, 14, 8, string.format("%-10s", string.format("%.2f m/s", state.targetVelocity)), COL_HOLD)
-        drawButton(t, BTN_DEC.x1, 8, "[ - ]")
-        drawButton(t, BTN_INC.x1, 8, "[ + ]")
+        drawButton(t, BTN_DEC.x1,  8, "[ - ]")
+        drawButton(t, BTN_INC.x1,  8, "[ + ]")
+        drawButton(t, BTN_ZERO.x1, 8, "[ 0 ]")
+        drawButton(t, BTN_TWO.x1,  8, "[ 2 ]")
     end
 
     -- Row 9: throttle
     drawRow(t, 9)
     writeLabel(t, 3, 9, "THROTTLE")
-    writeAt(t, 14, 9, string.format("%-10s", string.format("%d / 15", state.throttle)))
+    writeAt(t, 14, 9, string.format("%-8s", string.format("%d / 15", state.throttle)))
+    writeLabel(t, 22, 9, "P1")
+    writeAt(t, 27, 9, string.format("%-8s", string.format("%.1f", state.propeller1Power or 0)))
+    writeLabel(t, 34, 9, "P2")
+    writeAt(t, 39, 9, string.format("%-8s", string.format("%.1f", state.propeller2Power or 0)))
 
     -- Row 10: steering angle (debug)
     drawRow(t, 10)
     writeLabel(t, 3, 10, "STEERING")
     writeAt(t, 14, 10, string.format("%-10s", string.format("%.1f deg", state.steeringAngle or 0)))
 
-    -- Row 11: blank
-    drawRow(t, 11)
+    -- Row 11: nav divider and status (when nav active)
+    if state.navActive then
+        drawBorderLine(t, 11, BORDER_MID)
 
-    -- Row 12: bottom border
-    drawBorderLine(t, 12, BORDER_BTM)
+        -- Row 12: nav heading
+        drawRow(t, 12)
+        writeLabel(t, 3, 12, "HEADING ")
+        writeAt(t, 14, 12, string.format("%-10s", string.format("%.1f deg", state.navHeading or 0)), COL_NAV)
+
+        -- Row 13: nav bearing
+        drawRow(t, 13)
+        writeLabel(t, 3, 13, "BEARING ")
+        writeAt(t, 14, 13, string.format("%-10s", string.format("%.1f deg", state.navBearing or 0)), COL_NAV)
+
+        -- Row 14: nav autopilot steering output
+        drawRow(t, 14)
+        writeLabel(t, 3, 14, "STEER OUT")
+        writeAt(t, 14, 14, string.format("%-10s", string.format("%.2f", state.navOutput or 0)), COL_NAV)
+
+        -- Row 15: distance to target
+        drawRow(t, 15)
+        writeLabel(t, 3, 15, "DISTANCE")
+        writeAt(t, 14, 15, string.format("%-10s", string.format("%.1f m", state.navDistance or 0)), COL_NAV)
+
+        -- Row 16: blank
+        drawRow(t, 16)
+
+        -- Row 17: bottom border
+        drawBorderLine(t, 17, BORDER_BTM)
+    else
+        -- Row 11: blank
+        drawRow(t, 11)
+
+        -- Row 12: bottom border
+        drawBorderLine(t, 12, BORDER_BTM)
+
+        -- Clear any leftover nav rows from previous state
+        for y = 13, 17 do
+            drawRow(t, y)
+        end
+    end
 end

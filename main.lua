@@ -15,10 +15,11 @@ local MAX_POWER = 15
 local STEERING_OFFSET = MAX_POWER / 2  -- max differential at full steering lock
 local cachedSpeed = 0  -- computed once per tick to avoid double-calling velocityHold:read()
 local lastToggleState = redstone.getInput("top")
+local lastNavSteering = false
 
 local leverOutput = OnChangeOutput:new(function(v)
     throttleLever.setSignal(v)
-end, 0, true)
+end, 1, true)
 
 local velocityHold = VelocityHold:new(
     velocitySensor,
@@ -27,6 +28,18 @@ local velocityHold = VelocityHold:new(
 )
 
 local display = FlightDisplay:new()
+local bearingHold = BearingHold:new(navigationTable)
+
+local NAV_DISENGAGE_RANGE = 20  -- metres; hand steering back to wheel within this distance
+
+local function activeSteering()
+    if navigationTable.hasTarget()
+    and navigationTable.getDistanceToTarget() > NAV_DISENGAGE_RANGE then
+        return bearingHold:read()
+    else
+        return (steeringWheel.getAngle() or 0) / 180
+    end
+end
 
 local function activeSpeed()
     return cachedSpeed
@@ -36,16 +49,16 @@ end
 local rightMixer = MixerChannel:new(
     function(v) propeller1:setPower(v) end,
     0, MAX_POWER,
-    { read = activeSpeed,                                                  weight = 1.0 },
-    { read = function() return (steeringWheel.getAngle() or 0) / 180 end, weight =  STEERING_OFFSET }
+    { read = activeSpeed,   weight = 1.0 },
+    { read = activeSteering, weight =  STEERING_OFFSET }
 )
 
 -- Left propeller: base speed - steering offset (negative weight inverts the differential)
 local leftMixer = MixerChannel:new(
     function(v) propeller2:setPower(v) end,
     0, MAX_POWER,
-    { read = activeSpeed,                                                  weight = 1.0 },
-    { read = function() return (steeringWheel.getAngle() or 0) / 180 end, weight = -STEERING_OFFSET }
+    { read = activeSpeed,   weight = 1.0 },
+    { read = activeSteering, weight = -STEERING_OFFSET }
 )
 
 local function controlUpdate()
@@ -68,12 +81,33 @@ local function controlUpdate()
     rightMixer:update()
     leftMixer:update()
 
+    local hasTarget = navigationTable.hasTarget()
+    local navSteering = hasTarget and navigationTable.getDistanceToTarget() > NAV_DISENGAGE_RANGE
+
+    -- When nav steering engages, seed the integral from current bearing
+    if navSteering and not lastNavSteering then
+        bearingHold:captureState()
+    end
+
+    -- When nav steering disengages while velocity hold is active, set target to 0
+    if lastNavSteering and not navSteering and toggleState then
+        velocityHold:setTarget(0)
+    end
+    lastNavSteering = navSteering
     display:update({
         velocity       = velocitySensor.getVelocity(),
         throttle       = throttleLever.getState(),
         holdMode       = toggleState,
         targetVelocity = velocityHold.target,
         steeringAngle  = steeringWheel.getAngle() or 0,
+        navActive      = hasTarget,
+        navBearing     = hasTarget and navigationTable.getBearing() or nil,
+        navHeading     = navigationTable.getHeading(),
+        navOutput      = bearingHold.lastOutput,
+        navDistance    = hasTarget and navigationTable.getDistanceToTarget() or nil,
+        navSteering    = navSteering,
+        propeller1Power = propeller1.lastPower,
+        propeller2Power = propeller2.lastPower,
     })
 end
 
@@ -88,9 +122,15 @@ while true do
     elseif event == "mouse_click" then
         local action = display:hitTest(p2, p3)
         if action == "inc" then
-            velocityHold:nudgeTarget(0.1)
+            local rounded = math.floor(velocityHold.target * 10 + 0.5) / 10
+            velocityHold:nudgeTarget(rounded - velocityHold.target + 0.1)
         elseif action == "dec" then
-            velocityHold:nudgeTarget(-0.1)
+            local rounded = math.floor(velocityHold.target * 10 + 0.5) / 10
+            velocityHold:nudgeTarget(rounded - velocityHold.target - 0.1)
+        elseif action == "zero" then
+            velocityHold:setTarget(0)
+        elseif action == "two" then
+            velocityHold:setTarget(2)
         end
     end
 end
