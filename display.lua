@@ -75,6 +75,7 @@ function FlightDisplay:update(state)
     --   throttle: number (0-15)
     --   holdMode: boolean
     --   targetVelocity: number|nil (only relevant in hold mode)
+    --   steeringAngle: number (-180 to 180, degrees)
     -- }
 
     local t = self.term
@@ -125,9 +126,14 @@ function FlightDisplay:update(state)
     writeLabel(t, 3, 9, "THROTTLE")
     writeAt(t, 14, 9, string.format("%-10s", string.format("%d / 15", state.throttle)))
 
-    -- Row 10: blank
+    -- Row 10: steering angle (debug)
     drawRow(t, 10)
+    writeLabel(t, 3, 10, "STEERING")
+    writeAt(t, 14, 10, string.format("%-10s", string.format("%.1f deg", state.steeringAngle or 0)))
 
-    -- Row 11: bottom border
-    drawBorderLine(t, 11, BORDER_BTM)
+    -- Row 11: blank
+    drawRow(t, 11)
+
+    -- Row 12: bottom border
+    drawBorderLine(t, 12, BORDER_BTM)
 end
