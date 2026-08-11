@@ -66,7 +66,7 @@ local function controlUpdate()
 
     -- Detect transition into hold mode and capture current velocity as target
     if toggleState and not lastToggleState then
-        leverOutput.lastValue = nil
+        leverOutput:invalidate()
         velocityHold:captureTarget(throttleLever.getState())
     end
     lastToggleState = toggleState

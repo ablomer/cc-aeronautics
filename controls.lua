@@ -21,7 +21,11 @@ function OnChangeOutput:set(value)
     end
 end
 
--- MixerChannel combines N weighted input channels into a single output.
+function OnChangeOutput:invalidate()
+    self.lastValue = nil
+end
+
+
 -- Each input is a table: { read = fn, weight = number }
 -- weight defaults to 1.0 if omitted.
 -- The final value is the sum of (input.read() * input.weight), clamped to [min, max].

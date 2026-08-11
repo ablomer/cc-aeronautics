@@ -19,15 +19,11 @@ function BearingHold:new(navTable)
     return t
 end
 
--- Seed the integral from the current bearing so the first output matches the
--- current steering state and avoids a sudden jump on engagement.
+-- Reset the integral on engagement so the controller starts from a clean state.
+-- The proportional term alone handles the initial correction; seeding the
+-- integral to zero avoids carrying over stale windup from a previous engagement.
 function BearingHold:captureState()
     if not self.navTable.hasTarget() then return end
-    local bearing = self.navTable.getBearing()
-    bearing = ((bearing + 180) % 360) - 180
-    -- Back-calculate integral so initial output matches the proportional term.
-    -- At capture moment: output = P + I = bearing*GAIN + integral*I_GAIN
-    -- We want total = bearing*GAIN, so seed integral to 0.
     self.integral:reset()
 end
 
@@ -44,8 +40,9 @@ function BearingHold:read()
     -- Wrap to [-180, 180] so the ship always turns the short way
     bearing = ((bearing + 180) % 360) - 180
     self.lastBearing = bearing
-    -- Within deadband: output zero and let the integral drain
+    -- Within deadband: reset integral and output zero
     if math.abs(bearing) <= BearingHold.DEADBAND then
+        self.integral:reset()
         self.lastOutput = 0
         return 0
     end
