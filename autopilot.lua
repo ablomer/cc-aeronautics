@@ -131,7 +131,19 @@ AltitudeHold = {}
 -- Operational altitude range. MAX_ALTITUDE is deliberately below the true
 -- sensor/world ceiling (320) to leave braking margin; HARD_CEILING is a last-
 -- resort override independent of the control loop.
-AltitudeHold.MIN_ALTITUDE  = 60
+--
+-- MIN_ALTITUDE is deliberately far below any real terrain (confirmed: no
+-- land below y=65 in this world) rather than sitting just under it. This is
+-- the controller's own safety clamp, NOT the bottom of the pilot-selectable
+-- lever range -- that's a separate constant (main.lua's LEVER_MIN_ALTITUDE)
+-- since lever position 0 is reserved for landing (landing.lua) and no
+-- longer maps to a real altitude at all. Keeping MIN_ALTITUDE well below
+-- any terrain means the outer loop's descent-rate clamp (MAX_DESCENT_RATE)
+-- is always what's binding on the way down, not an accident of how close
+-- this clamp happens to sit to the ground -- the ground-relative flare
+-- shape actually comes from GroundProtection's CLEARANCE_TABLE
+-- (protection.lua), which both landing and crash-protection consult.
+AltitudeHold.MIN_ALTITUDE  = 0
 AltitudeHold.MAX_ALTITUDE  = 315
 AltitudeHold.HARD_CEILING  = 318   -- above this, force minimum burner amount regardless of target/output
 
@@ -160,7 +172,27 @@ AltitudeHold.DEADBAND = 3.0   -- metres, tune in-game
 -- Inner loop: PI on vertical-speed error, producing a burner amount.
 AltitudeHold.RATE_P_GAIN  = 40.0
 AltitudeHold.RATE_I_GAIN  = 10.0
-AltitudeHold.RATE_I_LIMIT = 200.0
+
+-- FIXED: this was 200.0, letting the integral wind up to 5x more than the
+-- controller can ever usefully apply. The proportional term alone already
+-- covers rateError * RATE_P_GAIN = MAX_CLIMB_RATE * RATE_P_GAIN = 120 of
+-- BURNER_AMOUNT_RANGE.max (500); the integral only needs to cover the
+-- remaining (500 - 120) / RATE_I_GAIN = 38 to let the controller reach
+-- full burner authority. 40 leaves a small margin above that.
+--
+-- This mattered in practice: if the pilot requests an altitude above the
+-- ship's real physical ceiling (burner authority maxes out below the
+-- requested height), the outer loop demands max climb forever since
+-- height never approaches target, and the integral saturates at
+-- RATE_I_LIMIT while stuck. The integral only unwinds by rateError * dt
+-- per tick, bounded by MAX_DESCENT_RATE (2 m/s) once actually descending
+-- -- at the old limit of 200, unwinding took roughly (200 - 15) / 2 ≈ 90
+-- SECONDS before the burner amount dropped low enough to actually start
+-- descending, which is exactly the "takes a while to start descending"
+-- symptom this was found from. At 40, the same unwind takes roughly
+-- (40 - 15) / 2 ≈ 12 seconds -- much less, though not instant; see
+-- main.lua's landing-engage integral reseed for the rest of the fix.
+AltitudeHold.RATE_I_LIMIT = 40.0
 
 -- Slew limit: burner amount may increase at most this fast (per second) to
 -- avoid abrupt heat spikes that overshoot; decreases are never slew-limited
@@ -178,6 +210,12 @@ end
 function AltitudeHold:new(altitudeSensor)
     local t = setmetatable({}, { __index = AltitudeHold })
     t.sensor    = altitudeSensor
+    -- This initial target (now 0, i.e. MIN_ALTITUDE) is never actually
+    -- acted on: main.lua always calls setTarget() with a real value before
+    -- the first read() (either the lever's mapped altitude, or landing's
+    -- target if the lever starts at the land position). Fragile but
+    -- currently safe -- noted here since MIN_ALTITUDE moving to 0 makes
+    -- this initial value obviously wrong if that ordering were ever changed.
     t.target    = AltitudeHold.MIN_ALTITUDE
     t.integral  = ClampedIntegral:new(AltitudeHold.RATE_I_LIMIT)
     t.lastAmount = BURNER_AMOUNT_RANGE.min

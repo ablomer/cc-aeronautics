@@ -90,6 +90,15 @@ function FlightDisplay:update(state)
     --   verticalSpeed: number (m/s)
     --   burnerAmount: number (last commanded burner amount, 5-500)
     --   altitudeFault: boolean (true when the altitude sensor reading looked invalid)
+    --   groundDistance: number|nil (metres, 0-15, minimum reading across optical sensors)
+    --   groundSensor: string|nil (name of the sensor reporting groundDistance)
+    --   groundFault: boolean (true when no optical sensor is giving a healthy reading)
+    --   groundProtectionActive: boolean (true when ground protection is overriding the pilot's requested altitude target this tick)
+    --   liftPropellerPower: number (last power sent to the bottom lift-propeller bank, 0-15)
+    --   landingState: string ("IDLE" | "SLOWING" | "DESCENDING" | "LANDED") -- driven by the burner lever (position 0), see landing.lua
+    --   horizontalSpeed: number|nil (m/s, forward velocity -- used to show why landing is still in SLOWING)
+    --   controlFault: boolean|nil (true when the control loop itself errored this tick)
+    --   controlError: string|nil (error message when controlFault is true)
     -- }
 
     local t = self.term
@@ -98,10 +107,17 @@ function FlightDisplay:update(state)
     -- Row 1: top border
     drawBorderLine(t, 1, BORDER_TOP)
 
-    -- Row 2: header
+    -- Row 2: header. Overridden to a visible alarm when the control loop
+    -- itself faulted (see main.lua's safeControlUpdate) -- this is the one
+    -- state where the operator needs to know the autopilot stopped running.
     drawRow(t, 2)
-    local title = "FLIGHT COMPUTER"
-    writeAt(t, math.floor((W - #title) / 2) + 1, 2, title, COL_HEADER)
+    if state.controlFault then
+        local title = "CONTROL FAULT - BURNER MIN / LIFT MAX"
+        writeAt(t, math.floor((W - #title) / 2) + 1, 2, title, colors.red)
+    else
+        local title = "FLIGHT COMPUTER"
+        writeAt(t, math.floor((W - #title) / 2) + 1, 2, title, COL_HEADER)
+    end
 
     -- Row 3: divider
     drawBorderLine(t, 3, BORDER_MID)
@@ -124,8 +140,28 @@ function FlightDisplay:update(state)
         writeAt(t, 30, 5, "[ MANUAL ]", COL_MANUAL)
     end
 
-    -- Row 6: blank
+    -- Row 6: lift propeller (always-on ground-protection assist) / landing control
     drawRow(t, 6)
+    writeLabel(t, 3, 6, "LIFT PROP")
+    local liftColor = (state.liftPropellerPower or 0) > 0 and colors.orange or COL_VALUE
+    writeAt(t, 14, 6, string.format("%-10s", string.format("%.1f / 15", state.liftPropellerPower or 0)), liftColor)
+
+    -- Landing status: no button anymore -- landing is driven entirely by
+    -- the burner lever (position 0), see landing.lua/main.lua. This is a
+    -- read-only status readout, not a control.
+    writeLabel(t, 26, 6, "LAND")
+    if state.landingState == "SLOWING" then
+        -- SLOWING's whole purpose is waiting for horizontal speed to
+        -- die down (the ship can only coast, not brake -- see landing.lua),
+        -- so show that speed here as the reason descent hasn't begun yet.
+        writeAt(t, 31, 6, string.format("%-14s", string.format("SLOWING %.1fm/s", state.horizontalSpeed or 0)), colors.orange)
+    elseif state.landingState == "DESCENDING" then
+        writeAt(t, 31, 6, string.format("%-14s", "DESCENDING"), colors.orange)
+    elseif state.landingState == "LANDED" then
+        writeAt(t, 31, 6, string.format("%-14s", "LANDED"), colors.green)
+    else
+        writeAt(t, 31, 6, string.format("%-14s", "-"), COL_LABEL)
+    end
 
     -- Row 7: velocity
     drawRow(t, 7)
@@ -152,10 +188,17 @@ function FlightDisplay:update(state)
     writeLabel(t, 34, 9, "P2")
     writeAt(t, 39, 9, string.format("%-8s", string.format("%.1f", state.propeller2Power or 0)))
 
-    -- Row 10: steering angle (debug)
+    -- Row 10: steering angle (debug) / ground clearance (optical sensor bank)
     drawRow(t, 10)
     writeLabel(t, 3, 10, "STEERING")
     writeAt(t, 14, 10, string.format("%-10s", string.format("%.1f deg", state.steeringAngle or 0)))
+    writeLabel(t, 26, 10, "GND")
+    if state.groundFault then
+        writeAt(t, 34, 10, string.format("%-10s", "FAULT"), colors.red)
+    else
+        local gndColor = (state.groundDistance and state.groundDistance < 15) and colors.orange or COL_VALUE
+        writeAt(t, 34, 10, string.format("%-10s", string.format("%.1f m", state.groundDistance or 15)), gndColor)
+    end
 
     -- Row 11: altitude section divider
     drawBorderLine(t, 11, BORDER_MID)
@@ -165,8 +208,14 @@ function FlightDisplay:update(state)
     local altColor = state.altitudeFault and colors.red or COL_VALUE
     writeLabel(t, 3, 12, "ALTITUDE")
     writeAt(t, 14, 12, string.format("%-10s", string.format("%.1f m", state.altitude or 0)), altColor)
-    writeLabel(t, 26, 12, "TARGET")
-    writeAt(t, 34, 12, string.format("%-10s", string.format("%.1f m", state.targetAltitude or 0)), COL_HOLD)
+    -- TARGET is shown in orange, with a "*" marker, whenever ground
+    -- protection has raised the effective target above what the pilot
+    -- actually requested -- this is the one place the operator can see that
+    -- the autopilot is overriding the lever, not just following it.
+    local targetColor = state.groundProtectionActive and colors.orange or COL_HOLD
+    local targetLabel = state.groundProtectionActive and "TARGET*" or "TARGET "
+    writeLabel(t, 26, 12, targetLabel)
+    writeAt(t, 34, 12, string.format("%-10s", string.format("%.1f m", state.targetAltitude or 0)), targetColor)
 
     -- Row 13: burner amount / vertical speed
     drawRow(t, 13)
