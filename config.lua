@@ -74,7 +74,7 @@ PERIPHERALS = {
     DEBUG = {
         -- type: laser_pointer
         -- Introspected live via debug.lua's 'Laser sensor' menu entry.
-        laserSensor = "laser_pointer_0",
+        laserSensor = "laser_pointer_1",
 
         -- type: optical_sensor
         -- Same physical peripheral as VNAV.opticalSensors[1]; introspected via debug.lua's 'Optical sensor' menu entry.

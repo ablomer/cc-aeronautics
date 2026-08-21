@@ -2,6 +2,8 @@
 -- debug program from a list and run it. Press Ctrl+T to stop whichever
 -- program is running and return to the shell.
 
+require("config")
+
 -- Several peripherals' exact method sets aren't confirmed elsewhere in this
 -- workspace, so rather than hardcoding field names that might be wrong, this
 -- introspects the peripheral via peripheral.getMethods and live-prints every
@@ -67,8 +69,8 @@ end
 
 -- Add new debug programs here as { name = "...", run = function ... end }.
 local PROGRAMS = {
-    { name = "Laser sensor", run = function() runPeripheralDebug("laser_pointer_0", "Laser sensor") end },
-    { name = "Optical sensor", run = function() runPeripheralDebug("optical_sensor_0", "Optical sensor") end },
+    { name = "Laser sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.laserSensor, "Laser sensor") end },
+    { name = "Optical sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.opticalSensor, "Optical sensor") end },
 }
 
 local function showMenu()
