@@ -85,6 +85,11 @@ function FlightDisplay:update(state)
     --   navSteering: boolean (true when autopilot is controlling steering)
     --   propeller1Power: number (last power sent to propeller 1)
     --   propeller2Power: number (last power sent to propeller 2)
+    --   altitude: number (current height, m)
+    --   targetAltitude: number (target height, m)
+    --   verticalSpeed: number (m/s)
+    --   burnerAmount: number (last commanded burner amount, 5-500)
+    --   altitudeFault: boolean (true when the altitude sensor reading looked invalid)
     -- }
 
     local t = self.term
@@ -152,44 +157,56 @@ function FlightDisplay:update(state)
     writeLabel(t, 3, 10, "STEERING")
     writeAt(t, 14, 10, string.format("%-10s", string.format("%.1f deg", state.steeringAngle or 0)))
 
-    -- Row 11: nav divider and status (when nav active)
+    -- Row 11: altitude section divider
+    drawBorderLine(t, 11, BORDER_MID)
+
+    -- Row 12: current / target altitude
+    drawRow(t, 12)
+    local altColor = state.altitudeFault and colors.red or COL_VALUE
+    writeLabel(t, 3, 12, "ALTITUDE")
+    writeAt(t, 14, 12, string.format("%-10s", string.format("%.1f m", state.altitude or 0)), altColor)
+    writeLabel(t, 26, 12, "TARGET")
+    writeAt(t, 34, 12, string.format("%-10s", string.format("%.1f m", state.targetAltitude or 0)), COL_HOLD)
+
+    -- Row 13: burner amount / vertical speed
+    drawRow(t, 13)
+    writeLabel(t, 3, 13, "BURNER  ")
+    writeAt(t, 14, 13, string.format("%-10s", string.format("%.0f", state.burnerAmount or 0)))
+    writeLabel(t, 26, 13, "VSPD  ")
+    writeAt(t, 34, 13, string.format("%-10s", string.format("%.2f m/s", state.verticalSpeed or 0)))
+
+    -- Rows 14+: nav divider and status (when nav active)
     if state.navActive then
-        drawBorderLine(t, 11, BORDER_MID)
+        drawBorderLine(t, 14, BORDER_MID)
 
-        -- Row 12: nav heading
-        drawRow(t, 12)
-        writeLabel(t, 3, 12, "HEADING ")
-        writeAt(t, 14, 12, string.format("%-10s", string.format("%.1f deg", state.navHeading or 0)), COL_NAV)
-
-        -- Row 13: nav bearing
-        drawRow(t, 13)
-        writeLabel(t, 3, 13, "BEARING ")
-        writeAt(t, 14, 13, string.format("%-10s", string.format("%.1f deg", state.navBearing or 0)), COL_NAV)
-
-        -- Row 14: nav autopilot steering output
-        drawRow(t, 14)
-        writeLabel(t, 3, 14, "STEER OUT")
-        writeAt(t, 14, 14, string.format("%-10s", string.format("%.2f", state.navOutput or 0)), COL_NAV)
-
-        -- Row 15: distance to target
+        -- Row 15: nav heading
         drawRow(t, 15)
-        writeLabel(t, 3, 15, "DISTANCE")
-        writeAt(t, 14, 15, string.format("%-10s", string.format("%.1f m", state.navDistance or 0)), COL_NAV)
+        writeLabel(t, 3, 15, "HEADING ")
+        writeAt(t, 14, 15, string.format("%-10s", string.format("%.1f deg", state.navHeading or 0)), COL_NAV)
 
-        -- Row 16: blank
+        -- Row 16: nav bearing
         drawRow(t, 16)
+        writeLabel(t, 3, 16, "BEARING ")
+        writeAt(t, 14, 16, string.format("%-10s", string.format("%.1f deg", state.navBearing or 0)), COL_NAV)
 
-        -- Row 17: bottom border
-        drawBorderLine(t, 17, BORDER_BTM)
+        -- Row 17: nav autopilot steering output
+        drawRow(t, 17)
+        writeLabel(t, 3, 17, "STEER OUT")
+        writeAt(t, 14, 17, string.format("%-10s", string.format("%.2f", state.navOutput or 0)), COL_NAV)
+
+        -- Row 18: distance to target
+        drawRow(t, 18)
+        writeLabel(t, 3, 18, "DISTANCE")
+        writeAt(t, 14, 18, string.format("%-10s", string.format("%.1f m", state.navDistance or 0)), COL_NAV)
+
+        -- Row 19: bottom border
+        drawBorderLine(t, 19, BORDER_BTM)
     else
-        -- Row 11: blank
-        drawRow(t, 11)
-
-        -- Row 12: bottom border
-        drawBorderLine(t, 12, BORDER_BTM)
+        -- Row 14: bottom border
+        drawBorderLine(t, 14, BORDER_BTM)
 
         -- Clear any leftover nav rows from previous state
-        for y = 13, 17 do
+        for y = 15, 19 do
             drawRow(t, y)
         end
     end

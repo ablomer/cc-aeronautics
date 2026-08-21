@@ -4,12 +4,17 @@ require("autopilot")
 require("display")
 require("util")
 
-local propeller1 = Propeller:new("analog_transmission_6")
-local propeller2 = Propeller:new("analog_transmission_7")
-local throttleLever = peripheral.wrap("throttle_lever_3")
-local velocitySensor = peripheral.wrap("velocity_sensor_2")
-local steeringWheel = peripheral.wrap("steering_wheel_2")
-local navigationTable = peripheral.wrap("navigation_table_0")
+local propeller1 = Propeller:new("analog_transmission_8")
+local propeller2 = Propeller:new("analog_transmission_9")
+local throttleLever = peripheral.wrap("throttle_lever_7")
+local velocitySensor = peripheral.wrap("velocity_sensor_3")
+local steeringWheel = peripheral.wrap("steering_wheel_3")
+local navigationTable = peripheral.wrap("navigation_table_1")
+local burnerLever = peripheral.wrap("throttle_lever_8")
+local altitudeSensor = peripheral.wrap("altitude_sensor_1")
+local burners = {
+    peripheral.wrap("hot_air_burner_2")
+}
 
 local MAX_POWER = 15
 local STEERING_OFFSET = MAX_POWER / 2  -- max differential at full steering lock
@@ -27,6 +32,10 @@ local velocityHold = VelocityHold:new(
     0, MAX_POWER
 )
 
+local burnerBank = BurnerBank:new(burners)
+local altitudeHold = AltitudeHold:new(altitudeSensor)
+local lastBurnerLever = nil  -- forces target recompute + capture on first tick
+
 local display = FlightDisplay:new()
 local bearingHold = BearingHold:new(navigationTable)
 
@@ -43,6 +52,14 @@ end
 
 local function activeSpeed()
     return cachedSpeed
+end
+
+-- Maps the 0-15 burner lever position to a target altitude within the
+-- operational range. MAX_ALTITUDE (315) is used instead of the sensor's
+-- true ceiling (320) to leave braking margin; see AltitudeHold.HARD_CEILING.
+local function leverToTargetAltitude(leverPosition)
+    local span = AltitudeHold.MAX_ALTITUDE - AltitudeHold.MIN_ALTITUDE
+    return AltitudeHold.MIN_ALTITUDE + (leverPosition / MAX_POWER) * span
 end
 
 -- Right propeller: base speed + steering offset
@@ -94,6 +111,29 @@ local function controlUpdate()
         velocityHold:setTarget(0)
     end
     lastNavSteering = navSteering
+
+    -- Altitude hold: the burner lever always drives a target altitude (there
+    -- is no separate manual/hold switch for this axis, unlike the throttle).
+    local burnerLeverState = burnerLever.getState()
+    local isFirstTick = lastBurnerLever == nil
+
+    -- Bumpless startup: seed the integral from the burners' current
+    -- commanded amount only on the very first tick, so the controller
+    -- doesn't start from zero and cause a jump.
+    if isFirstTick then
+        altitudeHold:captureTarget(burnerBank.lastAmount)
+    end
+
+    -- Retarget whenever the lever moves (including the first tick, so the
+    -- initial target reflects the lever's starting position).
+    if isFirstTick or burnerLeverState ~= lastBurnerLever then
+        altitudeHold:setTarget(leverToTargetAltitude(burnerLeverState))
+    end
+    lastBurnerLever = burnerLeverState
+
+    local burnerAmount = altitudeHold:read()
+    burnerBank:setAmount(burnerAmount)
+
     display:update({
         velocity       = velocitySensor.getVelocity(),
         throttle       = throttleLever.getState(),
@@ -108,6 +148,11 @@ local function controlUpdate()
         navSteering    = navSteering,
         propeller1Power = propeller1.lastPower,
         propeller2Power = propeller2.lastPower,
+        altitude       = altitudeHold.lastHeight,
+        targetAltitude = altitudeHold.target,
+        verticalSpeed  = altitudeHold.lastVerticalSpeed,
+        burnerAmount   = burnerBank.lastAmount,
+        altitudeFault  = altitudeHold.fault,
     })
 end
 
