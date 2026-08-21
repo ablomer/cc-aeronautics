@@ -3,18 +3,36 @@ require("controls")
 require("autopilot")
 require("display")
 require("util")
+require("config")
 
-local propeller1 = Propeller:new("analog_transmission_8")
-local propeller2 = Propeller:new("analog_transmission_9")
-local throttleLever = peripheral.wrap("throttle_lever_7")
-local velocitySensor = peripheral.wrap("velocity_sensor_3")
-local steeringWheel = peripheral.wrap("steering_wheel_3")
-local navigationTable = peripheral.wrap("navigation_table_1")
-local burnerLever = peripheral.wrap("throttle_lever_8")
-local altitudeSensor = peripheral.wrap("altitude_sensor_1")
-local burners = {
-    peripheral.wrap("hot_air_burner_2")
-}
+
+-- ------------------------
+-- LNAV
+-- ------------------------
+local propeller1 = Propeller:new(PERIPHERALS.LNAV.rightPropellerTransmission.id)
+local propeller2 = Propeller:new(PERIPHERALS.LNAV.leftPropellerTransmission.id)
+local throttleLever = peripheral.wrap(PERIPHERALS.LNAV.throttleLever.id)
+local velocitySensor = peripheral.wrap(PERIPHERALS.LNAV.velocitySensor.id)
+
+local steeringWheel = peripheral.wrap(PERIPHERALS.LNAV.steeringWheel.id)
+local navigationTable = peripheral.wrap(PERIPHERALS.LNAV.navigationTable.id)
+
+-- ------------------------
+-- VNAV
+-- ------------------------
+local burnerLever = peripheral.wrap(PERIPHERALS.VNAV.burnerLever.id)
+local altitudeSensor = peripheral.wrap(PERIPHERALS.VNAV.altitudeSensor.id)
+local burners = {}
+for _, burner in ipairs(PERIPHERALS.VNAV.burners) do
+    table.insert(burners, peripheral.wrap(burner.id))
+end
+
+-- Vertical propellers all controlled by the same analog transmission
+local verticalPropellers = Propeller:new(PERIPHERALS.VNAV.verticalPropellerTransmission.id)
+local opticalSensors = {}
+for _, sensor in ipairs(PERIPHERALS.VNAV.opticalSensors) do
+    table.insert(opticalSensors, peripheral.wrap(sensor.id))
+end
 
 local MAX_POWER = 15
 local STEERING_OFFSET = MAX_POWER / 2  -- max differential at full steering lock
