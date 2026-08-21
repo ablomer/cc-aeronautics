@@ -9,29 +9,29 @@ require("config")
 -- ------------------------
 -- LNAV
 -- ------------------------
-local propeller1 = Propeller:new(PERIPHERALS.LNAV.rightPropellerTransmission.id)
-local propeller2 = Propeller:new(PERIPHERALS.LNAV.leftPropellerTransmission.id)
-local throttleLever = peripheral.wrap(PERIPHERALS.LNAV.throttleLever.id)
-local velocitySensor = peripheral.wrap(PERIPHERALS.LNAV.velocitySensor.id)
+local propeller1 = Propeller:new(PERIPHERALS.LNAV.rightPropellerTransmission)
+local propeller2 = Propeller:new(PERIPHERALS.LNAV.leftPropellerTransmission)
+local throttleLever = peripheral.wrap(PERIPHERALS.LNAV.throttleLever)
+local velocitySensor = peripheral.wrap(PERIPHERALS.LNAV.velocitySensor)
 
-local steeringWheel = peripheral.wrap(PERIPHERALS.LNAV.steeringWheel.id)
-local navigationTable = peripheral.wrap(PERIPHERALS.LNAV.navigationTable.id)
+local steeringWheel = peripheral.wrap(PERIPHERALS.LNAV.steeringWheel)
+local navigationTable = peripheral.wrap(PERIPHERALS.LNAV.navigationTable)
 
 -- ------------------------
 -- VNAV
 -- ------------------------
-local burnerLever = peripheral.wrap(PERIPHERALS.VNAV.burnerLever.id)
-local altitudeSensor = peripheral.wrap(PERIPHERALS.VNAV.altitudeSensor.id)
+local burnerLever = peripheral.wrap(PERIPHERALS.VNAV.burnerLever)
+local altitudeSensor = peripheral.wrap(PERIPHERALS.VNAV.altitudeSensor)
 local burners = {}
-for _, burner in ipairs(PERIPHERALS.VNAV.burners) do
-    table.insert(burners, peripheral.wrap(burner.id))
+for _, burnerId in ipairs(PERIPHERALS.VNAV.burners) do
+    table.insert(burners, peripheral.wrap(burnerId))
 end
 
 -- Vertical propellers all controlled by the same analog transmission
-local verticalPropellers = Propeller:new(PERIPHERALS.VNAV.verticalPropellerTransmission.id)
+local verticalPropellers = Propeller:new(PERIPHERALS.VNAV.verticalPropellerTransmission)
 local opticalSensors = {}
-for _, sensor in ipairs(PERIPHERALS.VNAV.opticalSensors) do
-    table.insert(opticalSensors, peripheral.wrap(sensor.id))
+for _, sensorId in ipairs(PERIPHERALS.VNAV.opticalSensors) do
+    table.insert(opticalSensors, peripheral.wrap(sensorId))
 end
 
 local MAX_POWER = 15
