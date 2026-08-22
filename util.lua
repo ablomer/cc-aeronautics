@@ -34,6 +34,22 @@ function ClampedIntegral:reset()
     self.value = 0
 end
 
+-- Advance a controller's lastClock and return a sane dt (seconds).
+-- First tick or a non-positive delta uses defaultDt. Stalls longer than
+-- maxDt are capped so a hitch does not dump a huge integral/slew step.
+function stepClock(state, defaultDt, maxDt)
+    maxDt = maxDt or 1.0
+    local now = os.clock()
+    local dt = defaultDt
+    if state.lastClock ~= nil then
+        dt = now - state.lastClock
+        if dt <= 0 then dt = defaultDt end
+        if dt > maxDt then dt = maxDt end
+    end
+    state.lastClock = now
+    return dt
+end
+
 -- Shared burner amount range, used by both the BurnerBank actuator (flight.lua)
 -- and the VerticalSpeedHold controller (autopilot.lua) so the controller's
 -- clamping/anti-windup math always agrees with what the actuator accepts.

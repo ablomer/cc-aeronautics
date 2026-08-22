@@ -6,10 +6,10 @@ require("config")
 -- Its read() method is compatible as a MixerChannel input.
 BearingHold = {}
 
-BearingHold.GAIN       = 2 / 180   -- proportional gain; maps ±90° error to ±1.0 output
-BearingHold.I_GAIN     = 2 / 180   -- integral gain; tune as needed
-BearingHold.I_LIMIT    = 1.0       -- clamps the integral to prevent windup
-BearingHold.MIN_OUTPUT = 0.1       -- minimum effective output magnitude to overcome drag
+BearingHold.GAIN       = 1 / 45    -- proportional; maps ±45° error to ±1.0 (10° → ~0.22)
+BearingHold.I_GAIN     = 0.04      -- output per degree-second of accumulated error
+BearingHold.I_LIMIT    = 20.0      -- degree-seconds; I term max is I_LIMIT * I_GAIN (0.8)
+BearingHold.MIN_OUTPUT = 0.15      -- minimum effective output magnitude to overcome drag
 BearingHold.DEADBAND   = 2.0       -- degrees; bearing errors within this range are ignored
 
 function BearingHold:new(navTable)
@@ -17,6 +17,7 @@ function BearingHold:new(navTable)
     t.navTable  = navTable
     t.integral  = ClampedIntegral:new(BearingHold.I_LIMIT)
     t.lastBearing = nil
+    t.lastClock = nil
     return t
 end
 
@@ -41,13 +42,18 @@ function BearingHold:read()
     -- Wrap to [-180, 180] so the ship always turns the short way
     bearing = ((bearing + 180) % 360) - 180
     self.lastBearing = bearing
+    local dt = stepClock(self, 0.1)
+
     -- Within deadband: reset integral and output zero
     if math.abs(bearing) <= BearingHold.DEADBAND then
         self.integral:reset()
         self.lastOutput = 0
         return 0
     end
-    self.integral:add(bearing)
+    -- Integrate in degree-seconds so I can actually wind up a residual
+    -- (the old add(bearing) with I_LIMIT 1 saturated in one tick and
+    -- contributed only ~0.01 of steering — a ~10° hang never closed).
+    self.integral:add(bearing * dt)
     local value = (bearing * BearingHold.GAIN) + (self.integral.value * BearingHold.I_GAIN)
     value = Range:new(-1, 1):clamp(value)
     -- Apply minimum output floor to overcome drag at small errors
@@ -180,14 +186,7 @@ function VerticalSpeedHold:read(desiredVS)
     local height = self.sensor.getHeight()
     local verticalSpeed = self.sensor.getVerticalSpeed()
 
-    local now = os.clock()
-    local dt = 0.2
-    if self.lastClock ~= nil then
-        dt = now - self.lastClock
-        if dt <= 0 then dt = 0.2 end
-        if dt > 1.0 then dt = 1.0 end  -- guard against long stalls skewing the integral
-    end
-    self.lastClock = now
+    local dt = stepClock(self, 0.1)
 
     if not isValidHeight(height) or not isValidRate(verticalSpeed) then
         -- Sensor fault: freeze the last commanded amount rather than

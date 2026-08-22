@@ -72,10 +72,6 @@ local function activeSteering()
     end
 end
 
-local function activeSpeed()
-    return cachedSpeed
-end
-
 -- Maps the 1-15 burner lever position to a target altitude within the
 -- operational range. Lever 0 is the landing detent and does not use this
 -- mapping. MAX_ALTITUDE (315) is used instead of the sensor's true ceiling
@@ -90,29 +86,21 @@ local function leverToTargetVelocity(leverPosition)
     return (leverPosition / MAX_POWER) * SHIP.LNAV.maxSpeed
 end
 
--- Right propeller: base speed + steering offset
-local rightMixer = MixerChannel:new(
-    function(v) propeller1:setPower(v) end,
-    0, MAX_POWER,
-    { read = activeSpeed,   weight = 1.0 },
-    { read = activeSteering, weight =  STEERING_OFFSET }
-)
-
--- Left propeller: base speed - steering offset (negative weight inverts the differential)
-local leftMixer = MixerChannel:new(
-    function(v) propeller2:setPower(v) end,
-    0, MAX_POWER,
-    { read = activeSpeed,   weight = 1.0 },
-    { read = activeSteering, weight = -STEERING_OFFSET }
-)
-
 local function controlUpdate()
     -- Throttle lever is always a velocity setpoint (0 = stop).
-    velocityHold:setTarget(leverToTargetVelocity(throttleLever.getState()))
+    local leverState = throttleLever.getState()
+    velocityHold:setTarget(leverToTargetVelocity(leverState))
     cachedSpeed = velocityHold:read()
 
-    rightMixer:update()
-    leftMixer:update()
+    local leftPower, rightPower = allocatePropMix(
+        cachedSpeed,
+        activeSteering(),
+        MAX_POWER,
+        STEERING_OFFSET,
+        leverState == 0
+    )
+    propeller2:setPower(leftPower)
+    propeller1:setPower(rightPower)
 
     local hasTarget = navigationTable.hasTarget()
     local navSteering = wantNavSteering()

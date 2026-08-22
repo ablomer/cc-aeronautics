@@ -52,3 +52,25 @@ function MixerChannel:update()
     value = math.max(self.min, math.min(self.max, value))
     self.setFn(value)
 end
+
+-- Split a surge command and a steer command in [-1, 1] onto left/right
+-- propeller power. maxDiff is the largest half-differential (today 7.5).
+--
+-- Cruise (pivot == false): shrink the differential so both sides stay in
+-- [0, maxPower] and the mean stays at surge. Turns do not sag speed.
+-- Pivot (pivot == true): clamp each side independently so one prop can
+-- spool up at a stop (lever 0). Mean thrust may rise; speed hold is at 0.
+function allocatePropMix(surge, steer, maxPower, maxDiff, pivot)
+    if pivot then
+        local right = surge + maxDiff * steer
+        local left  = surge - maxDiff * steer
+        right = math.max(0, math.min(maxPower, right))
+        left  = math.max(0, math.min(maxPower, left))
+        return left, right
+    end
+    local maxD = math.min(surge, maxPower - surge, maxDiff)
+    if maxD < 0 then maxD = 0 end
+    local right = surge + maxD * steer
+    local left  = surge - maxD * steer
+    return left, right
+end
