@@ -473,3 +473,92 @@ function verticalPropPower(rateError, slewLimited, hasGround)
     end
     return Range:new(0, VNav.PROP_MAX_POWER):clamp(rateError * VNav.PROP_GAIN)
 end
+
+-- PitchHold is the attitude outer loop: gimbal pitch error -> desired
+-- stabilizer angle. The Servo (flight.lua) is the only thing that talks
+-- to the rotational speed controller; this just writes a setpoint.
+-- invertPitch in SHIP.ATT is applied by the caller if a positive
+-- stabilizer angle pitches the hull the wrong way.
+PitchHold = {}
+
+PitchHold.GAIN     = 2.0    -- stabilizer deg per deg of pitch error
+PitchHold.D_GAIN   = 0.4    -- stabilizer deg per deg/s of pitch rate (damping)
+PitchHold.I_GAIN   = 0.15   -- stabilizer deg per degree-second of accumulated error
+PitchHold.I_LIMIT  = 20.0   -- degree-seconds; I term max is I_LIMIT * I_GAIN (3.0)
+PitchHold.I_BAND   = 10.0   -- degrees; only integrate near level
+PitchHold.DEADBAND = 0.5    -- degrees; pitch errors within this range command 0
+
+-- CC peripherals may return a list or multiple values. Accept either.
+local function unpackReading(first, second, third)
+    if type(first) == "table" then
+        return first[1], first[2], first[3]
+    end
+    return first, second, third
+end
+
+local function isFiniteNumber(v)
+    return type(v) == "number" and v == v
+end
+
+function PitchHold:new(gimbal)
+    local t = setmetatable({}, { __index = PitchHold })
+    t.gimbal = gimbal
+    t.integral = ClampedIntegral:new(PitchHold.I_LIMIT)
+    t.travel = Range:new(SHIP.ATT.minAngle, SHIP.ATT.maxAngle)
+    t.lastPitch = nil
+    t.lastPitchRate = 0
+    t.lastOutput = 0
+    t.fault = false
+    t.lastClock = nil
+    return t
+end
+
+function PitchHold:captureState()
+    self.integral:reset()
+    self.lastClock = nil
+end
+
+-- Returns a desired stabilizer angle clamped to SHIP.ATT travel.
+-- Call once per tick; the integral is stateful.
+function PitchHold:read()
+    if self.gimbal == nil then
+        self.fault = true
+        return self.lastOutput
+    end
+
+    local pitch, _roll = unpackReading(self.gimbal.getAngles())
+    local wx = unpackReading(self.gimbal.getAngularRates())
+    if not isFiniteNumber(pitch) then
+        self.fault = true
+        return self.lastOutput
+    end
+    self.fault = false
+    self.lastPitch = pitch
+    if isFiniteNumber(wx) then
+        self.lastPitchRate = wx
+    else
+        wx = self.lastPitchRate
+    end
+
+    local dt = stepClock(self, 0.1)
+
+    -- Target is level (0). Pitch is already the error.
+    if math.abs(pitch) <= PitchHold.DEADBAND then
+        self.integral:reset()
+        self.lastOutput = 0
+        return 0
+    end
+
+    if math.abs(pitch) <= PitchHold.I_BAND then
+        self.integral:add(pitch * dt)
+    else
+        self.integral:reset()
+    end
+
+    local value = (pitch * PitchHold.GAIN)
+        + (self.integral.value * PitchHold.I_GAIN)
+        + (wx * PitchHold.D_GAIN)
+    value = self.travel:clamp(value)
+    self.lastOutput = value
+    return value
+end

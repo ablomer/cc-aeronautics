@@ -3,6 +3,30 @@
 -- program is running and return to the shell.
 
 require("config")
+require("util")
+require("flight")
+
+-- Format getter returns so tables print as {1.2, 3.4} instead of table: 0x...
+local function formatValue(value)
+    if type(value) == "table" then
+        local parts = {}
+        local n = #value
+        if n > 0 then
+            for i = 1, n do
+                parts[i] = formatValue(value[i])
+            end
+            return "{" .. table.concat(parts, ", ") .. "}"
+        end
+        for k, v in pairs(value) do
+            table.insert(parts, tostring(k) .. "=" .. formatValue(v))
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    elseif type(value) == "number" then
+        return string.format("%.4g", value)
+    else
+        return tostring(value)
+    end
+end
 
 -- Several peripherals' exact method sets aren't confirmed elsewhere in this
 -- workspace, so rather than hardcoding field names that might be wrong, this
@@ -55,11 +79,19 @@ local function runPeripheralDebug(peripheralName, label)
         term.setCursorPos(1, HEADER_LINES)
 
         for _, name in ipairs(getters) do
-            local ok, value = pcall(sensor[name])
+            local ok, a, b, c = pcall(sensor[name])
             if ok then
-                print(string.format("%-20s %s", name, tostring(value)))
+                local shown
+                if b ~= nil then
+                    local packed = { a, b }
+                    if c ~= nil then packed[3] = c end
+                    shown = formatValue(packed)
+                else
+                    shown = formatValue(a)
+                end
+                print(string.format("%-20s %s", name, shown))
             else
-                print(string.format("%-20s <error: %s>", name, tostring(value)))
+                print(string.format("%-20s <error: %s>", name, tostring(a)))
             end
         end
 
@@ -67,10 +99,94 @@ local function runPeripheralDebug(peripheralName, label)
     end
 end
 
+local function runStabilizerServoDebug()
+    local servo = Servo:new(
+        PERIPHERALS.ATT.stabilizerSpeedController,
+        PERIPHERALS.ATT.stabilizerBearing,
+        SHIP.ATT
+    )
+    if servo.rsc == nil or servo.bearing == nil then
+        error("Could not wrap stabilizer RSC or bearing")
+    end
+
+    local lastAngle = nil
+    local lastClock = nil
+    local measuredRate = 0
+    local NUDGE = 1.0
+
+    local function redraw()
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("Stabilizer servo debug")
+        print("Up/Down: nudge 1 deg   0: zero   Q: quit")
+        print("Ctrl+T also stops the RSC before returning.")
+        print()
+        print(string.format("Target     %.1f deg", servo.target))
+        if servo.lastAngle ~= nil then
+            print(string.format("Angle      %.1f deg", servo.lastAngle))
+        else
+            print("Angle      --")
+        end
+        print(string.format("Error      %.1f deg", servo.lastError or 0))
+        print(string.format("RPM        %d", servo.lastSpeed or 0))
+        print(string.format("Meas. rate %.1f deg/s", measuredRate))
+        print(string.format("deg/s/RPM  %.2f  invertServo=%s",
+            SHIP.ATT.degPerSecPerRpm, tostring(SHIP.ATT.invertServo)))
+        if servo.fault then
+            print()
+            print("FAULT: bearing getAngle() was not a number")
+        end
+    end
+
+    local function sampleRate()
+        local angle = servo.lastAngle
+        local now = os.clock()
+        if lastAngle ~= nil and lastClock ~= nil and angle ~= nil then
+            local dt = now - lastClock
+            if dt > 0 then
+                measuredRate = (angle - lastAngle) / dt
+            end
+        end
+        lastAngle = angle
+        lastClock = now
+    end
+
+    redraw()
+    local timer = os.startTimer(0.1)
+    while true do
+        -- pullEventRaw so Ctrl+T is a "terminate" event we can catch
+        -- and stop the RSC instead of leaving it spinning.
+        local event, p1 = os.pullEventRaw()
+        if event == "terminate" then
+            servo:stop()
+            return
+        elseif event == "timer" and p1 == timer then
+            servo:update()
+            sampleRate()
+            redraw()
+            timer = os.startTimer(0.1)
+        elseif event == "key" then
+            if p1 == keys.up then
+                servo:setTarget(servo.target + NUDGE)
+            elseif p1 == keys.down then
+                servo:setTarget(servo.target - NUDGE)
+            elseif p1 == keys.zero then
+                servo:setTarget(0)
+            elseif p1 == keys.q then
+                servo:stop()
+                return
+            end
+            redraw()
+        end
+    end
+end
+
 -- Add new debug programs here as { name = "...", run = function ... end }.
 local PROGRAMS = {
     { name = "Laser sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.laserSensor, "Laser sensor") end },
     { name = "Optical sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.opticalSensor, "Optical sensor") end },
+    { name = "Gimbal sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.gimbalSensor, "Gimbal sensor") end },
+    { name = "Stabilizer servo", run = runStabilizerServoDebug },
 }
 
 local function showMenu()

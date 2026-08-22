@@ -49,6 +49,18 @@ local altitudeHold = AltitudeHold:new()
 local lastBurnerLever = nil  -- forces target recompute + capture on first tick
 local landedLatched = false  -- stays true after touchdown until the lever leaves 0
 
+-- ------------------------
+-- ATT
+-- ------------------------
+local gimbal = peripheral.wrap(PERIPHERALS.ATT.gimbalSensor)
+local stabilizer = Servo:new(
+    PERIPHERALS.ATT.stabilizerSpeedController,
+    PERIPHERALS.ATT.stabilizerBearing,
+    SHIP.ATT
+)
+local pitchHold = PitchHold:new(gimbal)
+local pitchSign = SHIP.ATT.invertPitch and -1 or 1
+
 local display = FlightDisplay:new()
 local speakers = {}
 for _, speakerId in ipairs(PERIPHERALS.AUDIO.speakers) do
@@ -211,6 +223,19 @@ local function controlUpdate()
         lnavMode = "hold"
     end
 
+    -- ATT: hold gimbal pitch at 0 via the stabilizer servo. Park the
+    -- loop on the ground so it does not fight the hull sitting still.
+    local attMode
+    if landedLatched then
+        attMode = "off"
+        pitchHold:captureState()
+        stabilizer:setTarget(0)
+    else
+        attMode = "level"
+        stabilizer:setTarget(pitchHold:read() * pitchSign)
+    end
+    stabilizer:update()
+
     local snapshot = {
         velocity       = velocitySensor.getVelocity(),
         throttle       = leverState,
@@ -235,6 +260,13 @@ local function controlUpdate()
         verticalPropPower = verticalPropellers.lastPower,
         burnerAmount   = burnerBank.lastAmount,
         altitudeFault  = verticalSpeedHold.fault,
+        pitch          = pitchHold.lastPitch,
+        pitchRate      = pitchHold.lastPitchRate,
+        stabAngle      = stabilizer.lastAngle,
+        stabTarget     = stabilizer.target,
+        stabRpm        = stabilizer.lastSpeed or 0,
+        attMode        = attMode,
+        attFault       = pitchHold.fault or stabilizer.fault,
     }
     display:update(snapshot)
     audio:update(snapshot)

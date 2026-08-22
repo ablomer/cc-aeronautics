@@ -27,6 +27,11 @@ local VNAV_MODE = {
     terrain = { label = "[ TERRAIN ]", color = COL_TERRAIN },
 }
 
+local ATT_MODE = {
+    level = { label = "[ LEVEL ]  ", color = COL_HOLD },
+    off   = { label = "[ OFF ]    ", color = COL_MANUAL },
+}
+
 local BORDER_TOP = "\xc9" .. string.rep("\xcd", W - 2) .. "\xbb"
 local BORDER_MID = "\xcc" .. string.rep("\xcd", W - 2) .. "\xb9"
 local BORDER_BTM = "\xc8" .. string.rep("\xcd", W - 2) .. "\xbc"
@@ -88,6 +93,13 @@ function FlightDisplay:update(state)
     --   verticalPropPower: number (last power sent to the vertical prop bank)
     --   burnerAmount: number (last commanded burner amount, 5-500)
     --   altitudeFault: boolean (true when the altitude sensor reading looked invalid)
+    --   pitch: number|nil (gimbal pitch, deg)
+    --   pitchRate: number|nil (gimbal pitch rate, deg/s)
+    --   stabAngle: number|nil (stabilizer bearing angle, deg)
+    --   stabTarget: number (commanded stabilizer angle, deg)
+    --   stabRpm: number (last RSC speed)
+    --   attMode: "level"|"off"
+    --   attFault: boolean
     -- }
 
     local t = self.term
@@ -168,29 +180,58 @@ function FlightDisplay:update(state)
     writeLabel(t, 38, 10, "VP")
     writeAt(t, 41, 10, string.format("%-6s", string.format("%.1f", state.verticalPropPower or 0)))
 
-    -- Rows 11+: nav when a table target exists
+    -- Row 11: ATT divider
+    drawBorderLine(t, 11, BORDER_MID)
+
+    -- Row 12: ATT mode + pitch
+    drawRow(t, 12)
+    writeLabel(t, 3, 12, "ATT")
+    local att = ATT_MODE[state.attMode] or ATT_MODE.off
+    writeAt(t, 12, 12, att.label, att.color)
+    writeLabel(t, 26, 12, "PITCH")
+    local pitchColor = state.attFault and colors.red or COL_VALUE
+    if state.pitch ~= nil then
+        writeAt(t, 34, 12, string.format("%-10s", string.format("%.1f deg", state.pitch)), pitchColor)
+    else
+        writeAt(t, 34, 12, string.format("%-10s", "--"), pitchColor)
+    end
+
+    -- Row 13: stabilizer angle / command / RPM
+    drawRow(t, 13)
+    writeLabel(t, 3, 13, "STAB")
+    if state.stabAngle ~= nil then
+        writeAt(t, 8, 13, string.format("%-7s", string.format("%.1f", state.stabAngle)))
+    else
+        writeAt(t, 8, 13, string.format("%-7s", "--"))
+    end
+    writeLabel(t, 16, 13, "CMD")
+    writeAt(t, 20, 13, string.format("%-7s", string.format("%.1f", state.stabTarget or 0)))
+    writeLabel(t, 28, 13, "RPM")
+    writeAt(t, 32, 13, string.format("%-6s", string.format("%d", state.stabRpm or 0)))
+
+    -- Rows 14+: nav when a table target exists
     if state.navActive then
-        drawBorderLine(t, 11, BORDER_MID)
+        drawBorderLine(t, 14, BORDER_MID)
 
-        drawRow(t, 12)
-        writeLabel(t, 3, 12, "HDG     ")
-        writeAt(t, 14, 12, string.format("%-10s", string.format("%.1f deg", state.navHeading or 0)), COL_NAV)
-        writeLabel(t, 26, 12, "BRG   ")
-        writeAt(t, 34, 12, string.format("%-10s", string.format("%.1f deg", state.navBearing or 0)), COL_NAV)
+        drawRow(t, 15)
+        writeLabel(t, 3, 15, "HDG     ")
+        writeAt(t, 14, 15, string.format("%-10s", string.format("%.1f deg", state.navHeading or 0)), COL_NAV)
+        writeLabel(t, 26, 15, "BRG   ")
+        writeAt(t, 34, 15, string.format("%-10s", string.format("%.1f deg", state.navBearing or 0)), COL_NAV)
 
-        drawRow(t, 13)
-        writeLabel(t, 3, 13, "DIST    ")
-        writeAt(t, 14, 13, string.format("%-10s", string.format("%.1f m", state.navDistance or 0)), COL_NAV)
-        writeLabel(t, 26, 13, "STEER ")
-        writeAt(t, 34, 13, string.format("%-10s", string.format("%.2f", state.navOutput or 0)), COL_NAV)
+        drawRow(t, 16)
+        writeLabel(t, 3, 16, "DIST    ")
+        writeAt(t, 14, 16, string.format("%-10s", string.format("%.1f m", state.navDistance or 0)), COL_NAV)
+        writeLabel(t, 26, 16, "STEER ")
+        writeAt(t, 34, 16, string.format("%-10s", string.format("%.2f", state.navOutput or 0)), COL_NAV)
 
-        drawBorderLine(t, 14, BORDER_BTM)
-        for y = 15, 19 do
+        drawBorderLine(t, 17, BORDER_BTM)
+        for y = 18, 19 do
             drawRow(t, y)
         end
     else
-        drawBorderLine(t, 11, BORDER_BTM)
-        for y = 12, 19 do
+        drawBorderLine(t, 14, BORDER_BTM)
+        for y = 15, 19 do
             drawRow(t, y)
         end
     end

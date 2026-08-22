@@ -23,6 +23,26 @@ SHIP = {
         -- landed and cuts heat. Measure at rest, not in the hover.
         touchdownAgl = 2.0,
     },
+    ATT = {
+        -- Stabilizer travel clamp (degrees). Positive is an up angle.
+        minAngle = -45,
+        maxAngle = 45,
+
+        -- Speed cap well under the RSC's 256 RPM limit. 1 RPM is already
+        -- 6 deg/s at the bearing before any gearing.
+        maxRpm = 8,
+
+        -- Degrees per second of bearing travel per 1 RPM. 360/60 = 6 at
+        -- 1:1; multiply by the gear ratio if the RSC is not direct-drive.
+        -- Calibrate from the debug script's measured deg/s.
+        degPerSecPerRpm = 6.0,
+
+        -- Flip if positive RPM decreases getAngle().
+        invertServo = false,
+
+        -- Flip if a positive stabilizer angle pitches the hull the wrong way.
+        invertPitch = false,
+    },
 }
 
 PERIPHERALS = {
@@ -90,6 +110,24 @@ PERIPHERALS = {
     },
 
     -- ------------------------
+    -- ATT: attitude (gimbal pitch hold via the horizontal stabilizer)
+    -- ------------------------
+    ATT = {
+        -- type: gimbal_sensor
+        -- Reports body-frame pitch/roll (getAngles) and rates (getAngularRates).
+        -- Pitch is xAngle, rotation about body-X; 0 = level.
+        gimbalSensor = "gimbal_sensor_0",
+
+        -- type: Create rotational speed controller
+        -- Drives the stabilizer mechanical bearing. setTargetSpeed is integer RPM.
+        stabilizerSpeedController = "Create_RotationSpeedController_0",
+
+        -- type: Create mechanical bearing
+        -- Reports the current stabilizer angle in degrees (positive = up).
+        stabilizerBearing = "Create_MechanicalBearing_0",
+    },
+
+    -- ------------------------
     -- AUDIO: noteblock cues for mode changes and alerts
     -- ------------------------
     AUDIO = {
@@ -112,5 +150,9 @@ PERIPHERALS = {
         -- type: optical_sensor
         -- Same physical peripheral as VNAV.opticalSensors[1]; introspected via debug.lua's 'Optical sensor' menu entry.
         opticalSensor = "optical_sensor_0",
+
+        -- type: gimbal_sensor
+        -- Same physical peripheral as ATT.gimbalSensor; introspected via debug.lua's 'Gimbal sensor' menu entry.
+        gimbalSensor = "gimbal_sensor_0",
     },
 }
