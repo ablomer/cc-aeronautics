@@ -190,10 +190,20 @@ local function controlUpdate()
         verticalPropellers:setPower(propPower)
     end
 
+    local lnavMode
+    if leverState == 0 then
+        lnavMode = "stop"
+    elseif navSteering then
+        lnavMode = "nav"
+    else
+        lnavMode = "hold"
+    end
+
     display:update({
         velocity       = velocitySensor.getVelocity(),
-        throttle       = throttleLever.getState(),
+        throttle       = leverState,
         targetVelocity = velocityHold.target,
+        lnavMode       = lnavMode,
         steeringAngle  = steeringWheel.getAngle() or 0,
         navActive      = hasTarget,
         navBearing     = hasTarget and navigationTable.getBearing() or nil,
