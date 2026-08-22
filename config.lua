@@ -90,6 +90,18 @@ PERIPHERALS = {
     },
 
     -- ------------------------
+    -- AUDIO: noteblock cues for mode changes and alerts
+    -- ------------------------
+    AUDIO = {
+        -- type: speaker (list)
+        -- Every speaker plays the same playNote cues for LNAV/VNAV
+        -- transitions, nav acquire/lost, terrain warnings, and faults.
+        speakers = {
+            "speaker_0",
+        },
+    },
+
+    -- ------------------------
     -- DEBUG: peripherals only exercised by debug.lua's standalone menu
     -- ------------------------
     DEBUG = {

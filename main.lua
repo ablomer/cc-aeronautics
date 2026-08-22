@@ -2,6 +2,7 @@ require("flight")
 require("controls")
 require("autopilot")
 require("display")
+require("audio")
 require("util")
 require("config")
 
@@ -49,6 +50,11 @@ local lastBurnerLever = nil  -- forces target recompute + capture on first tick
 local landedLatched = false  -- stays true after touchdown until the lever leaves 0
 
 local display = FlightDisplay:new()
+local speakers = {}
+for _, speakerId in ipairs(PERIPHERALS.AUDIO.speakers) do
+    table.insert(speakers, peripheral.wrap(speakerId))
+end
+local audio = ShipAudio:new(speakers)
 local bearingHold = BearingHold:new(navigationTable)
 
 local NAV_DISENGAGE_RANGE = 20  -- metres; hand steering back to wheel within this distance
@@ -199,7 +205,7 @@ local function controlUpdate()
         lnavMode = "hold"
     end
 
-    display:update({
+    local snapshot = {
         velocity       = velocitySensor.getVelocity(),
         throttle       = leverState,
         targetVelocity = velocityHold.target,
@@ -223,8 +229,11 @@ local function controlUpdate()
         verticalPropPower = verticalPropellers.lastPower,
         burnerAmount   = burnerBank.lastAmount,
         altitudeFault  = verticalSpeedHold.fault,
-    })
+    }
+    display:update(snapshot)
+    audio:update(snapshot)
 end
+
 
 local timer = os.startTimer(0.1)
 while true do
