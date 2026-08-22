@@ -10,12 +10,20 @@ require("config")
 -- ------------------------
 -- LNAV
 -- ------------------------
-local propeller1 = Propeller:new(PERIPHERALS.LNAV.rightPropellerTransmission)
-local propeller2 = Propeller:new(PERIPHERALS.LNAV.leftPropellerTransmission)
+local propeller1 = Propeller:new(PERIPHERALS.LNAV.rightPropellerSpeedController, {
+    maxRpm = SHIP.LNAV.maxRpm,
+    invert = SHIP.LNAV.invertRight,
+})
+local propeller2 = Propeller:new(PERIPHERALS.LNAV.leftPropellerSpeedController, {
+    maxRpm = SHIP.LNAV.maxRpm,
+    invert = SHIP.LNAV.invertLeft,
+})
 local throttleLever = peripheral.wrap(PERIPHERALS.LNAV.throttleLever)
 local velocitySensor = peripheral.wrap(PERIPHERALS.LNAV.velocitySensor)
 
-local steeringWheel = peripheral.wrap(PERIPHERALS.LNAV.steeringWheel)
+local steeringWheel = SteeringWheel:new(PERIPHERALS.LNAV.steeringWheel, {
+    deadzone = SHIP.LNAV.steeringDeadzone,
+})
 local navigationTable = peripheral.wrap(PERIPHERALS.LNAV.navigationTable)
 
 -- ------------------------
@@ -29,19 +37,19 @@ for _, burnerId in ipairs(PERIPHERALS.VNAV.burners) do
 end
 
 -- Vertical propellers all controlled by the same analog transmission
-local verticalPropellers = Propeller:new(PERIPHERALS.VNAV.verticalPropellerTransmission)
+local verticalPropellers = AnalogPropeller:new(PERIPHERALS.VNAV.verticalPropellerTransmission)
 local opticalSensors = {}
 for _, sensorId in ipairs(PERIPHERALS.VNAV.opticalSensors) do
     table.insert(opticalSensors, peripheral.wrap(sensorId))
 end
 
-local MAX_POWER = 15
-local STEERING_OFFSET = MAX_POWER / 2  -- max differential at full steering lock
-local STEERING_DEADZONE = 1.0  -- degrees; ignore wheel noise around center
+local MAX_POWER = 15  -- throttle / burner lever notches (still 0-15)
+local MAX_RPM = SHIP.LNAV.maxRpm
+local STEERING_OFFSET = MAX_RPM / 2  -- max differential at full steering lock
 local cachedSpeed = 0  -- computed once per tick to avoid double-calling velocityHold:read()
 local lastNavSteering = false
 
-local velocityHold = VelocityHold:new(velocitySensor, 0, MAX_POWER)
+local velocityHold = VelocityHold:new(velocitySensor, 0, MAX_RPM)
 
 local burnerBank = BurnerBank:new(burners)
 local verticalSpeedHold = VerticalSpeedHold:new(altitudeSensor)
@@ -71,7 +79,8 @@ local bearingHold = BearingHold:new(navigationTable)
 
 local NAV_DISENGAGE_RANGE = 20  -- metres; hand steering back to wheel within this distance
 
--- Auto steering only while moving: lever 0 is stop + manual wheel.
+-- Auto steering only while moving. Lever 0 is stop: velocity loop parked,
+-- wheel still yaws in place (deadzone keeps props at 0 when centered).
 local function wantNavSteering()
     return throttleLever.getState() > 0
         and navigationTable.hasTarget()
@@ -79,15 +88,16 @@ local function wantNavSteering()
 end
 
 local function activeSteering()
+    local steer
     if wantNavSteering() then
-        return bearingHold:read()
+        steer = bearingHold:read()
     else
-        local angle = steeringWheel.getAngle() or 0
-        if math.abs(angle) <= STEERING_DEADZONE then
-            return 0
-        end
-        return angle / 180
+        steer = steeringWheel:getAngle() / 180
     end
+    if SHIP.LNAV.invertSteer then
+        steer = -steer
+    end
+    return steer
 end
 
 -- Maps the 1-15 burner lever position to a target altitude within the
@@ -105,9 +115,8 @@ local function leverToTargetVelocity(leverPosition)
 end
 
 local function controlUpdate()
-    -- Throttle lever is always a velocity setpoint. Detent 0 parks the loop
-    -- rather than holding 0 m/s: the props cannot reverse, so a residual
-    -- integral there would just push thrust at zero error.
+    -- Throttle lever is always a velocity setpoint. Detent 0 parks the
+    -- speed loop; the wheel can still pivot the hull in place.
     local leverState = throttleLever.getState()
     if leverState == 0 then
         cachedSpeed = velocityHold:holdOff()
@@ -115,16 +124,15 @@ local function controlUpdate()
         velocityHold:setTarget(leverToTargetVelocity(leverState))
         cachedSpeed = velocityHold:read()
     end
-
-    local leftPower, rightPower = allocatePropMix(
+    local leftRpm, rightRpm = allocatePropMix(
         cachedSpeed,
         activeSteering(),
-        MAX_POWER,
+        MAX_RPM,
         STEERING_OFFSET,
         leverState == 0
     )
-    propeller2:setPower(leftPower)
-    propeller1:setPower(rightPower)
+    propeller2:setSpeed(leftRpm)
+    propeller1:setSpeed(rightRpm)
 
     local hasTarget = navigationTable.hasTarget()
     local navSteering = wantNavSteering()
@@ -241,15 +249,15 @@ local function controlUpdate()
         throttle       = leverState,
         targetVelocity = velocityHold.target,
         lnavMode       = lnavMode,
-        steeringAngle  = steeringWheel.getAngle() or 0,
+        steeringAngle  = steeringWheel:getAngle(),
         navActive      = hasTarget,
         navBearing     = hasTarget and navigationTable.getBearing() or nil,
         navHeading     = navigationTable.getHeading(),
         navOutput      = bearingHold.lastOutput,
         navDistance    = hasTarget and navigationTable.getDistanceToTarget() or nil,
         navSteering    = navSteering,
-        propeller1Power = propeller1.lastPower,
-        propeller2Power = propeller2.lastPower,
+        propeller1Rpm  = propeller1.lastSpeed,
+        propeller2Rpm  = propeller2.lastSpeed,
         altitude       = verticalSpeedHold.lastHeight,
         targetAltitude = altitudeHold.target,
         landing        = landing,

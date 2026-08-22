@@ -16,6 +16,21 @@ SHIP = {
         -- Target velocity (m/s) at throttle lever 15. Lever 0 is stop.
         -- Tune after a flight if this is short of the hull's cruise.
         maxSpeed = 2.0,
+
+        -- Propeller RSC cap. Create clamps setTargetSpeed to [-256, 256];
+        -- this is the software ceiling the mixer and velocity loop share.
+        maxRpm = 256,
+
+        -- Positive RSC RPM is backward on this hull; invert so +command is forward.
+        invertLeft = true,
+        invertRight = true,
+
+        -- Flip if nav locks at ~180° (inverted heading loop) or the wheel
+        -- yaws the hull the wrong way. Positive steer should yaw right.
+        invertSteer = true,
+
+        -- Wheel angles within this many degrees of center read as 0.
+        steeringDeadzone = 1.0,
     },
     VNAV = {
         -- Optical AGL (metres) when the hull is sitting on the ground.
@@ -50,13 +65,13 @@ PERIPHERALS = {
     -- LNAV: horizontal navigation (forward velocity + steering)
     -- ------------------------
     LNAV = {
-        -- type: analog_transmission
-        -- Drives the right propeller (Propeller:setPower sends 15 - power via setSignal).
-        rightPropellerTransmission = "analog_transmission_9",
+        -- type: Create rotational speed controller
+        -- Drives the right propeller. setTargetSpeed is integer RPM in [-256, 256].
+        rightPropellerSpeedController = "Create_RotationSpeedController_2",
 
-        -- type: analog_transmission
-        -- Drives the left propeller (Propeller:setPower sends 15 - power via setSignal).
-        leftPropellerTransmission = "analog_transmission_8",
+        -- type: Create rotational speed controller
+        -- Drives the left propeller. setTargetSpeed is integer RPM in [-256, 256].
+        leftPropellerSpeedController = "Create_RotationSpeedController_1",
 
         -- type: throttle_lever
         -- Velocity setpoint: position 0-15 maps onto 0 .. SHIP.LNAV.maxSpeed.
@@ -88,7 +103,7 @@ PERIPHERALS = {
         -- type: altitude_sensor
         -- Reports current height and vertical speed; height feeds the altitude
         -- outer loop, vertical speed is tracked by VerticalSpeedHold.
-        altitudeSensor = "altitude_sensor_1",
+        altitudeSensor = "altitude_sensor_2",
 
         -- type: hot_air_burner (list)
         -- Heat sources; BurnerBank fans the commanded amount out to every burner in this list.
@@ -99,7 +114,7 @@ PERIPHERALS = {
         -- type: analog_transmission
         -- Drives all vertical propellers together (single shared transmission).
         -- Leftover +up boost when VerticalSpeedHold is short of desiredVS.
-        verticalPropellerTransmission = "analog_transmission_10",
+        verticalPropellerTransmission = "analog_transmission_11",
 
         -- type: optical_sensor (list)
         -- Downward sensors; worst-case (closest hasHit) AGL drives cruise

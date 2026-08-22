@@ -1,17 +1,85 @@
 require("util")
 
+-- Propeller drives a Create rotational speed controller. Unlike the old
+-- analog transmissions (brakes: higher signal = slower), setTargetSpeed
+-- commands RPM directly. Range is integer [-256, 256]; the peripheral
+-- clamps anything outside that.
+-- https://wiki.createmod.net/users/cc-tweaked-integration/rotational-speed-controller#setTargetSpeed
 Propeller = {}
+Propeller.MAX_RPM = 256
 
-function Propeller:new(transmission)
+local function roundRpm(speed)
+    if speed >= 0 then
+        return math.floor(speed + 0.5)
+    end
+    return math.ceil(speed - 0.5)
+end
+
+function Propeller:new(speedControllerId, opts)
     local t = setmetatable({}, { __index = Propeller })
+    t.rsc = peripheral.wrap(speedControllerId)
+    opts = opts or {}
+    t.maxRpm = opts.maxRpm or Propeller.MAX_RPM
+    t.invert = opts.invert or false
+    t.lastSpeed = 0
+    t.lastCommanded = nil
+    return t
+end
+
+function Propeller:setSpeed(speed)
+    speed = roundRpm(speed)
+    speed = Range:new(-self.maxRpm, self.maxRpm):clamp(speed)
+    self.lastSpeed = speed
+    local commanded = self.invert and -speed or speed
+    if self.lastCommanded == nil or commanded ~= self.lastCommanded then
+        self.rsc.setTargetSpeed(commanded)
+        self.lastCommanded = commanded
+    end
+end
+
+-- Analog transmissions still used as brakes on the vertical prop bank.
+-- Higher setSignal slows the shaft; setPower inverts so 15 is full speed.
+AnalogPropeller = {}
+
+function AnalogPropeller:new(transmission)
+    local t = setmetatable({}, { __index = AnalogPropeller })
     t.transmission = peripheral.wrap(transmission)
     t.lastPower = 0
     return t
 end
 
-function Propeller:setPower(power)
+function AnalogPropeller:setPower(power)
     self.transmission.setSignal(15 - power)
     self.lastPower = power
+end
+
+-- SteeringWheel wraps the physical wheel so every reader sees a deadzoned
+-- angle. getAngle() is 0 inside the deadzone; lastRaw is the unfiltered
+-- peripheral reading for debugging centering.
+SteeringWheel = {}
+
+function SteeringWheel:new(peripheralId, opts)
+    local t = setmetatable({}, { __index = SteeringWheel })
+    t.wheel = peripheral.wrap(peripheralId)
+    opts = opts or {}
+    t.deadzone = opts.deadzone or 1.0
+    t.lastRaw = 0
+    t.lastAngle = 0
+    return t
+end
+
+function SteeringWheel:getAngle()
+    local raw = 0
+    if self.wheel ~= nil then
+        raw = self.wheel.getAngle() or 0
+    end
+    self.lastRaw = raw
+    if math.abs(raw) <= self.deadzone then
+        self.lastAngle = 0
+    else
+        self.lastAngle = raw
+    end
+    return self.lastAngle
 end
 
 -- BurnerBank fans one commanded amount out to every hot air burner in the

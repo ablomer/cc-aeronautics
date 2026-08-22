@@ -105,24 +105,26 @@ function BearingHold:read()
 end
 
 -- VelocityHold maintains a target velocity and computes a PI control
--- output to drive it. Its read() method is compatible as a MixerChannel input.
+-- output in propeller RPM. Its read() method is compatible as a MixerChannel input.
 VelocityHold = {}
 
-VelocityHold.GAIN    = 15.0  -- proportional gain; tune as needed
-VelocityHold.I_GAIN  = 2.0   -- integral gain; tune as needed
-VelocityHold.I_LIMIT = 15.0  -- clamps the integral to prevent windup
+-- Analog loop was 15 power per 1 m/s of error (full scale). Same fraction
+-- of available RSC RPM: 1 m/s commands SHIP.LNAV.maxRpm.
+VelocityHold.GAIN    = SHIP.LNAV.maxRpm
+VelocityHold.I_GAIN  = 2.0 * (SHIP.LNAV.maxRpm / 15)  -- same I/P ratio as analog
+VelocityHold.I_LIMIT = 15.0  -- accumulated velocity-error ticks; not RPM
 
 function VelocityHold:new(velocitySensor, minOutput, maxOutput)
     local t = setmetatable({}, { __index = VelocityHold })
     t.sensor   = velocitySensor
     t.target   = 0
     t.integral = ClampedIntegral:new(VelocityHold.I_LIMIT)
-    t.output   = Range:new(minOutput or 0, maxOutput or VelocityHold.I_LIMIT)
+    t.output   = Range:new(minOutput or 0, maxOutput or SHIP.LNAV.maxRpm)
     return t
 end
 
 -- Set an explicit target velocity. Deliberately does NOT reset the integral:
--- the throttle lever changes continuously, and the integral is the power the
+-- the throttle lever changes continuously, and the integral is the RPM the
 -- controller has already found. Resetting on every notch would bump output.
 function VelocityHold:setTarget(velocity)
     self.target = velocity
@@ -135,9 +137,8 @@ function VelocityHold:nudgeTarget(delta)
     self.target = self.target + delta
 end
 
--- Park the loop: command zero power and drop the accumulated integral.
--- The propellers cannot reverse, so at the stop detent there is nothing for
--- the integral to hold; leaving it would keep pushing thrust at zero error.
+-- Park the loop: drop the speed target and integral. Detent 0 is not a
+-- 0 m/s hold; pivot steering still uses the wheel at this detent.
 function VelocityHold:holdOff()
     self.target = 0
     self.integral:reset()
@@ -145,18 +146,18 @@ function VelocityHold:holdOff()
 end
 
 -- Capture the current velocity as the target (used when engaging hold mode).
--- Optionally pass the current throttle to seed the integral so output starts
--- smoothly from the current power level rather than from zero.
-function VelocityHold:captureTarget(currentThrottle)
+-- Optionally pass the current RPM to seed the integral so output starts
+-- smoothly from the current command rather than from zero.
+function VelocityHold:captureTarget(currentRpm)
     self:setTarget(self.sensor.getVelocity())
-    if currentThrottle ~= nil then
-        -- Back-calculate integral so initial output matches current throttle.
+    if currentRpm ~= nil then
+        -- Back-calculate integral so initial output matches current RPM.
         -- At capture moment error is 0, so output = integral * I_GAIN.
-        self.integral:set(currentThrottle / VelocityHold.I_GAIN)
+        self.integral:set(currentRpm / VelocityHold.I_GAIN)
     end
 end
 
--- Returns a PI power value based on velocity error.
+-- Returns a PI RPM value based on velocity error.
 -- Compatible as a MixerChannel input read function.
 function VelocityHold:read()
     local error = self.target - self.sensor.getVelocity()

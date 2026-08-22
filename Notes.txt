@@ -1,0 +1,7 @@
+Heading hold, steering wheel controls direction in which to move the target heading
+
+Speed controllers for propellers
+
+Write README and short description for GitHub
+
+The Create: Avionics mod that makes this project possible recommends reading the parallel guide at the link https://solastrius.github.io/CreateAvionics/guide/mainthread.html . Take a look at that page and determine if it's something that we could take advantage of for this project.

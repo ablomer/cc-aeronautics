@@ -81,8 +81,8 @@ function FlightDisplay:update(state)
     --   navOutput: number|nil (steering output in [-1,1], only when navActive)
     --   navDistance: number|nil (metres, only when navActive)
     --   navSteering: boolean (true when autopilot is controlling steering)
-    --   propeller1Power: number (last power sent to propeller 1)
-    --   propeller2Power: number (last power sent to propeller 2)
+    --   propeller1Rpm: number (last RPM sent to propeller 1)
+    --   propeller2Rpm: number (last RPM sent to propeller 2)
     --   altitude: number (current height, m)
     --   targetAltitude: number (target height, m; unused when landing)
     --   landing: boolean (burner lever detent 0)
@@ -135,12 +135,12 @@ function FlightDisplay:update(state)
     writeLabel(t, 26, 5, "WHEEL ")
     writeAt(t, 34, 5, string.format("%-10s", string.format("%.1f deg", state.steeringAngle or 0)))
 
-    -- Row 6: propeller powers
+    -- Row 6: propeller RPM
     drawRow(t, 6)
     writeLabel(t, 3, 6, "P1      ")
-    writeAt(t, 14, 6, string.format("%-10s", string.format("%.1f", state.propeller1Power or 0)))
+    writeAt(t, 14, 6, string.format("%-10s", string.format("%d", state.propeller1Rpm or 0)))
     writeLabel(t, 26, 6, "P2    ")
-    writeAt(t, 34, 6, string.format("%-10s", string.format("%.1f", state.propeller2Power or 0)))
+    writeAt(t, 34, 6, string.format("%-10s", string.format("%d", state.propeller2Rpm or 0)))
 
     -- Row 7: VNAV divider
     drawBorderLine(t, 7, BORDER_MID)
