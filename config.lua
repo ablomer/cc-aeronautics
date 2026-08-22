@@ -21,7 +21,7 @@ SHIP = {
         -- Optical AGL (metres) when the hull is sitting on the ground.
         -- Flare completes here; VNAV then latches landed and cuts heat.
         -- Measured on this ship: optical_sensor_0 reads 0.8 m at rest.
-        touchdownAgl = 1.8,
+        touchdownAgl = 2.0,
     },
 }
 
