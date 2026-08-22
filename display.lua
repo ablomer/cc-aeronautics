@@ -12,6 +12,16 @@ local COL_HOLD     = colors.green
 local COL_BTN_BG   = colors.gray
 local COL_BTN_TEXT = colors.white
 local COL_NAV      = colors.cyan
+local COL_TERRAIN  = colors.orange
+local COL_FLARE    = colors.cyan
+
+local VNAV_MODE = {
+    hold    = { label = "[ HOLD ]   ", color = COL_HOLD },
+    land    = { label = "[ LAND ]   ", color = COL_MANUAL },
+    flare   = { label = "[ FLARE ]  ", color = COL_FLARE },
+    landed  = { label = "[ LANDED ] ", color = COL_HOLD },
+    terrain = { label = "[ TERRAIN ]", color = COL_TERRAIN },
+}
 
 local BORDER_TOP = "\xc9" .. string.rep("\xcd", W - 2) .. "\xbb"
 local BORDER_MID = "\xcc" .. string.rep("\xcd", W - 2) .. "\xb9"
@@ -86,8 +96,13 @@ function FlightDisplay:update(state)
     --   propeller1Power: number (last power sent to propeller 1)
     --   propeller2Power: number (last power sent to propeller 2)
     --   altitude: number (current height, m)
-    --   targetAltitude: number (target height, m)
+    --   targetAltitude: number (target height, m; unused when landing)
+    --   landing: boolean (burner lever detent 0)
+    --   vnavMode: "hold"|"land"|"flare"|"landed"|"terrain"
     --   verticalSpeed: number (m/s)
+    --   desiredVS: number (commanded vertical speed, m/s)
+    --   agl: number|nil (worst-case optical AGL, m; nil when no sensor hasHit)
+    --   verticalPropPower: number (last power sent to the vertical prop bank)
     --   burnerAmount: number (last commanded burner amount, 5-500)
     --   altitudeFault: boolean (true when the altitude sensor reading looked invalid)
     -- }
@@ -160,53 +175,70 @@ function FlightDisplay:update(state)
     -- Row 11: altitude section divider
     drawBorderLine(t, 11, BORDER_MID)
 
-    -- Row 12: current / target altitude
+    -- Row 12: VNAV mode chip (same style as VELOCITY / STEER on row 5) + target
     drawRow(t, 12)
-    local altColor = state.altitudeFault and colors.red or COL_VALUE
-    writeLabel(t, 3, 12, "ALTITUDE")
-    writeAt(t, 14, 12, string.format("%-10s", string.format("%.1f m", state.altitude or 0)), altColor)
+    writeLabel(t, 3, 12, "VNAV")
+    local mode = VNAV_MODE[state.vnavMode] or VNAV_MODE.hold
+    writeAt(t, 12, 12, mode.label, mode.color)
     writeLabel(t, 26, 12, "TARGET")
-    writeAt(t, 34, 12, string.format("%-10s", string.format("%.1f m", state.targetAltitude or 0)), COL_HOLD)
+    if state.landing then
+        writeAt(t, 34, 12, string.format("%-10s", "--"), COL_MANUAL)
+    else
+        writeAt(t, 34, 12, string.format("%-10s", string.format("%.1f m", state.targetAltitude or 0)), COL_HOLD)
+    end
 
-    -- Row 13: burner amount / vertical speed
+    -- Row 13: current altitude / vertical speed
     drawRow(t, 13)
-    writeLabel(t, 3, 13, "BURNER  ")
-    writeAt(t, 14, 13, string.format("%-10s", string.format("%.0f", state.burnerAmount or 0)))
+    local altColor = state.altitudeFault and colors.red or COL_VALUE
+    writeLabel(t, 3, 13, "ALTITUDE")
+    writeAt(t, 14, 13, string.format("%-10s", string.format("%.1f m", state.altitude or 0)), altColor)
     writeLabel(t, 26, 13, "VSPD  ")
     writeAt(t, 34, 13, string.format("%-10s", string.format("%.2f m/s", state.verticalSpeed or 0)))
 
-    -- Rows 14+: nav divider and status (when nav active)
+    -- Row 14: burner / AGL / desired VS / vertical prop power
+    drawRow(t, 14)
+    writeLabel(t, 3, 14, "BURN")
+    writeAt(t, 8, 14, string.format("%-5s", string.format("%.0f", state.burnerAmount or 0)))
+    writeLabel(t, 14, 14, "AGL")
+    if state.agl ~= nil then
+        writeAt(t, 18, 14, string.format("%-7s", string.format("%.1f m", state.agl)))
+    else
+        writeAt(t, 18, 14, string.format("%-7s", "--"))
+    end
+    writeLabel(t, 26, 14, "DVS")
+    writeAt(t, 30, 14, string.format("%-7s", string.format("%.2f", state.desiredVS or 0)))
+    writeLabel(t, 38, 14, "VP")
+    writeAt(t, 41, 14, string.format("%-6s", string.format("%.1f", state.verticalPropPower or 0)))
+
+    -- Rows 15+: nav divider and status (when nav active)
     if state.navActive then
-        drawBorderLine(t, 14, BORDER_MID)
+        drawBorderLine(t, 15, BORDER_MID)
 
-        -- Row 15: nav heading
-        drawRow(t, 15)
-        writeLabel(t, 3, 15, "HEADING ")
-        writeAt(t, 14, 15, string.format("%-10s", string.format("%.1f deg", state.navHeading or 0)), COL_NAV)
-
-        -- Row 16: nav bearing
+        -- Row 16: nav heading
         drawRow(t, 16)
-        writeLabel(t, 3, 16, "BEARING ")
-        writeAt(t, 14, 16, string.format("%-10s", string.format("%.1f deg", state.navBearing or 0)), COL_NAV)
+        writeLabel(t, 3, 16, "HEADING ")
+        writeAt(t, 14, 16, string.format("%-10s", string.format("%.1f deg", state.navHeading or 0)), COL_NAV)
 
-        -- Row 17: nav autopilot steering output
+        -- Row 17: nav bearing
         drawRow(t, 17)
-        writeLabel(t, 3, 17, "STEER OUT")
-        writeAt(t, 14, 17, string.format("%-10s", string.format("%.2f", state.navOutput or 0)), COL_NAV)
+        writeLabel(t, 3, 17, "BEARING ")
+        writeAt(t, 14, 17, string.format("%-10s", string.format("%.1f deg", state.navBearing or 0)), COL_NAV)
 
-        -- Row 18: distance to target
+        -- Row 18: steer output and distance (packed to keep the 19-row frame)
         drawRow(t, 18)
-        writeLabel(t, 3, 18, "DISTANCE")
-        writeAt(t, 14, 18, string.format("%-10s", string.format("%.1f m", state.navDistance or 0)), COL_NAV)
+        writeLabel(t, 3, 18, "STEER OUT")
+        writeAt(t, 14, 18, string.format("%-8s", string.format("%.2f", state.navOutput or 0)), COL_NAV)
+        writeLabel(t, 23, 18, "DIST")
+        writeAt(t, 28, 18, string.format("%-10s", string.format("%.1f m", state.navDistance or 0)), COL_NAV)
 
         -- Row 19: bottom border
         drawBorderLine(t, 19, BORDER_BTM)
     else
-        -- Row 14: bottom border
-        drawBorderLine(t, 14, BORDER_BTM)
+        -- Row 15: bottom border
+        drawBorderLine(t, 15, BORDER_BTM)
 
         -- Clear any leftover nav rows from previous state
-        for y = 15, 19 do
+        for y = 16, 19 do
             drawRow(t, y)
         end
     end

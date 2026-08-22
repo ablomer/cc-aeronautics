@@ -1,13 +1,24 @@
--- Ship-specific peripheral configuration.
+-- Ship-specific configuration.
 --
 -- This is the single source of truth for which physical peripheral (by its
--- ComputerCraft string ID) backs each logical role in the code. Other files
--- should reference PERIPHERALS.<SYSTEM>.<role> instead of hardcoding
--- peripheral name strings, so that re-wiring the ship only requires editing
--- this file.
+-- ComputerCraft string ID) backs each logical role, and for geometry that
+-- depends on how this hull is built. Other files should reference
+-- PERIPHERALS.<SYSTEM>.<role> and SHIP.<SYSTEM>.<key> instead of hardcoding
+-- those values, so that re-wiring or re-measuring the ship only requires
+-- editing this file.
 --
--- Each role is documented with a comment giving its peripheral type and a
+-- Each peripheral role is documented with a comment giving its type and a
 -- short description, immediately above the string ID.
+
+-- Hull / sensor geometry (not peripheral IDs).
+SHIP = {
+    VNAV = {
+        -- Optical AGL (metres) when the hull is sitting on the ground.
+        -- Flare completes here; VNAV then latches landed and cuts heat.
+        -- Measured on this ship: optical_sensor_0 reads 0.8 m at rest.
+        touchdownAgl = 1.5,
+    },
+}
 
 PERIPHERALS = {
     -- ------------------------
@@ -16,11 +27,11 @@ PERIPHERALS = {
     LNAV = {
         -- type: analog_transmission
         -- Drives the right propeller (Propeller:setPower sends 15 - power via setSignal).
-        rightPropellerTransmission = "analog_transmission_8",
+        rightPropellerTransmission = "analog_transmission_9",
 
         -- type: analog_transmission
         -- Drives the left propeller (Propeller:setPower sends 15 - power via setSignal).
-        leftPropellerTransmission = "analog_transmission_9",
+        leftPropellerTransmission = "analog_transmission_8",
 
         -- type: throttle_lever
         -- Manual throttle input; also the velocity target source captured when engaging velocity hold.
@@ -40,15 +51,17 @@ PERIPHERALS = {
     },
 
     -- ------------------------
-    -- VNAV: vertical navigation (altitude hold)
+    -- VNAV: vertical navigation (altitude hold + landing)
     -- ------------------------
     VNAV = {
         -- type: throttle_lever
-        -- Sets target altitude; lever position (0-15) is mapped linearly onto the altitude range.
+        -- Lever 1-15 maps linearly onto the altitude range; detent 0 is land
+        -- (fixed sink, then optical flare).
         burnerLever = "throttle_lever_8",
 
         -- type: altitude_sensor
-        -- Reports current height and vertical speed, consumed by AltitudeHold's cascade loops.
+        -- Reports current height and vertical speed; height feeds the altitude
+        -- outer loop, vertical speed is tracked by VerticalSpeedHold.
         altitudeSensor = "altitude_sensor_1",
 
         -- type: hot_air_burner (list)
@@ -59,10 +72,12 @@ PERIPHERALS = {
 
         -- type: analog_transmission
         -- Drives all vertical propellers together (single shared transmission).
+        -- Leftover +up boost when VerticalSpeedHold is short of desiredVS.
         verticalPropellerTransmission = "analog_transmission_10",
 
         -- type: optical_sensor (list)
-        -- Declared for future vertical obstacle/ground sensing; not yet read by the control loop.
+        -- Downward sensors; worst-case (closest hasHit) AGL drives cruise
+        -- terrain climb and the landing flare. Never wired to an actuator.
         opticalSensors = {
             "optical_sensor_0",
         },

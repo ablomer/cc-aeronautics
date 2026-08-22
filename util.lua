@@ -35,6 +35,6 @@ function ClampedIntegral:reset()
 end
 
 -- Shared burner amount range, used by both the BurnerBank actuator (flight.lua)
--- and the AltitudeHold controller (autopilot.lua) so the controller's
+-- and the VerticalSpeedHold controller (autopilot.lua) so the controller's
 -- clamping/anti-windup math always agrees with what the actuator accepts.
 BURNER_AMOUNT_RANGE = Range:new(5, 500)

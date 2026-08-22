@@ -51,8 +51,10 @@ local velocityHold = VelocityHold:new(
 )
 
 local burnerBank = BurnerBank:new(burners)
-local altitudeHold = AltitudeHold:new(altitudeSensor)
+local verticalSpeedHold = VerticalSpeedHold:new(altitudeSensor)
+local altitudeHold = AltitudeHold:new()
 local lastBurnerLever = nil  -- forces target recompute + capture on first tick
+local landedLatched = false  -- stays true after touchdown until the lever leaves 0
 
 local display = FlightDisplay:new()
 local bearingHold = BearingHold:new(navigationTable)
@@ -72,9 +74,10 @@ local function activeSpeed()
     return cachedSpeed
 end
 
--- Maps the 0-15 burner lever position to a target altitude within the
--- operational range. MAX_ALTITUDE (315) is used instead of the sensor's
--- true ceiling (320) to leave braking margin; see AltitudeHold.HARD_CEILING.
+-- Maps the 1-15 burner lever position to a target altitude within the
+-- operational range. Lever 0 is the landing detent and does not use this
+-- mapping. MAX_ALTITUDE (315) is used instead of the sensor's true ceiling
+-- (320) to leave braking margin; see VerticalSpeedHold.HARD_CEILING.
 local function leverToTargetAltitude(leverPosition)
     local span = AltitudeHold.MAX_ALTITUDE - AltitudeHold.MIN_ALTITUDE
     return AltitudeHold.MIN_ALTITUDE + (leverPosition / MAX_POWER) * span
@@ -130,27 +133,78 @@ local function controlUpdate()
     end
     lastNavSteering = navSteering
 
-    -- Altitude hold: the burner lever always drives a target altitude (there
-    -- is no separate manual/hold switch for this axis, unlike the throttle).
+    -- VNAV: lever 0 is the landing detent (flare on worst-case AGL).
+    -- Lever 1-15 is altitude hold, with a terrain climb override from AGL.
     local burnerLeverState = burnerLever.getState()
     local isFirstTick = lastBurnerLever == nil
+    local landing = burnerLeverState == 0
 
-    -- Bumpless startup: seed the integral from the burners' current
+    -- Bumpless startup: seed the VS-hold integral from the burners' current
     -- commanded amount only on the very first tick, so the controller
     -- doesn't start from zero and cause a jump.
     if isFirstTick then
-        altitudeHold:captureTarget(burnerBank.lastAmount)
+        verticalSpeedHold:capture(burnerBank.lastAmount)
     end
 
-    -- Retarget whenever the lever moves (including the first tick, so the
-    -- initial target reflects the lever's starting position).
-    if isFirstTick or burnerLeverState ~= lastBurnerLever then
+    -- Retarget whenever the lever moves in hold (including the first tick
+    -- if we start above detent 0). Landing does not use an altitude target.
+    if not landing and (isFirstTick or burnerLeverState ~= lastBurnerLever) then
         altitudeHold:setTarget(leverToTargetAltitude(burnerLeverState))
     end
     lastBurnerLever = burnerLeverState
 
-    local burnerAmount = altitudeHold:read()
-    burnerBank:setAmount(burnerAmount)
+    local agl, hasGround = readWorstAgl(opticalSensors)
+    if not landing then
+        landedLatched = false
+    elseif isTouchdown(agl, hasGround) then
+        landedLatched = true
+    end
+
+    local desiredVS
+    local vnavMode
+    if landedLatched then
+        -- Hull is on the ground: cut heat and props so the VS loop does
+        -- not hunt around DVS 0. Stays latched until the lever leaves 0.
+        desiredVS = 0
+        vnavMode = "landed"
+        burnerBank:setAmount(verticalSpeedHold:holdOff())
+        verticalPropellers:setPower(0)
+    elseif landing then
+        desiredVS = landingDesiredVS(agl, hasGround)
+        vnavMode = hasGround and "flare" or "land"
+        burnerBank:setAmount(verticalSpeedHold:read(desiredVS))
+        local propPower = 0
+        if not verticalSpeedHold.fault then
+            propPower = verticalPropPower(
+                verticalSpeedHold.lastRateError,
+                verticalSpeedHold.slewLimited,
+                hasGround
+            )
+        end
+        verticalPropellers:setPower(propPower)
+    else
+        local height = altitudeSensor.getHeight()
+        local altRate = altitudeHold:desiredRate(height)
+        local terrainVS = terrainClimbVS(agl, hasGround)
+        -- terrainVS is 0 when nothing has hit (or AGL is at/above clearance).
+        -- Do not max() against that 0: it would block descents and falsely
+        -- report TERRAIN whenever altitude hold asks to go down.
+        desiredVS = altRate
+        if terrainVS > 0 then
+            desiredVS = math.max(altRate, terrainVS)
+        end
+        vnavMode = (terrainVS > 0 and terrainVS > altRate) and "terrain" or "hold"
+        burnerBank:setAmount(verticalSpeedHold:read(desiredVS))
+        local propPower = 0
+        if not verticalSpeedHold.fault then
+            propPower = verticalPropPower(
+                verticalSpeedHold.lastRateError,
+                verticalSpeedHold.slewLimited,
+                hasGround
+            )
+        end
+        verticalPropellers:setPower(propPower)
+    end
 
     display:update({
         velocity       = velocitySensor.getVelocity(),
@@ -166,21 +220,26 @@ local function controlUpdate()
         navSteering    = navSteering,
         propeller1Power = propeller1.lastPower,
         propeller2Power = propeller2.lastPower,
-        altitude       = altitudeHold.lastHeight,
+        altitude       = verticalSpeedHold.lastHeight,
         targetAltitude = altitudeHold.target,
-        verticalSpeed  = altitudeHold.lastVerticalSpeed,
+        landing        = landing,
+        vnavMode       = vnavMode,
+        verticalSpeed  = verticalSpeedHold.lastVerticalSpeed,
+        desiredVS      = desiredVS,
+        agl            = hasGround and agl or nil,
+        verticalPropPower = verticalPropellers.lastPower,
         burnerAmount   = burnerBank.lastAmount,
-        altitudeFault  = altitudeHold.fault,
+        altitudeFault  = verticalSpeedHold.fault,
     })
 end
 
-local timer = os.startTimer(0.2)
+local timer = os.startTimer(0.1)
 while true do
     local event, p1, p2, p3 = os.pullEvent()
 
     if event == "timer" and p1 == timer then
         controlUpdate()
-        timer = os.startTimer(0.2)
+        timer = os.startTimer(0.1)
 
     elseif event == "mouse_click" then
         local action = display:hitTest(p2, p3)

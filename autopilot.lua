@@ -1,4 +1,5 @@
 require("util")
+require("config")
 
 -- BearingHold steers the ship towards a navigation target by computing the
 -- bearing error and producing a PI steering output in [-1, 1].
@@ -113,59 +114,33 @@ function VelocityHold:read()
     return value
 end
 
--- AltitudeHold maintains a target altitude using a cascade of two loops
--- instead of a single PID against a calibration curve:
---   outer loop:  altitude error      -> desired vertical speed (clamped, asymmetric)
---   inner loop:  vertical speed error -> burner amount (PI)
+-- VerticalSpeedHold is the VNAV inner loop: vertical-speed error -> burner
+-- amount (PI + increase-only slew). Altitude hold, landing flare, and
+-- terrain avoidance are outer loops that only write a desiredVS setpoint.
 -- Because each burner amount deterministically settles at one altitude, the
--- inner integral naturally converges on the correct equilibrium amount for
--- the current target: vertical speed can only be zero at that one amount.
--- No calibration curve or pre-flight tuning flight is required.
+-- integral naturally converges on the correct equilibrium amount whenever
+-- the commanded rate is zero.
 --
--- NOT verified against the physical peripherals in this workspace: the sign
--- convention of getVerticalSpeed() (positive = climbing is assumed) and the
--- exact climb/descend authority of the burners. Confirm in-game before
--- trusting the default gains below, they are starting points only.
-AltitudeHold = {}
+-- getVerticalSpeed() is positive when climbing, negative when descending.
+VerticalSpeedHold = {}
 
--- Operational altitude range. MAX_ALTITUDE is deliberately below the true
--- sensor/world ceiling (320) to leave braking margin; HARD_CEILING is a last-
--- resort override independent of the control loop.
-AltitudeHold.MIN_ALTITUDE  = 60
-AltitudeHold.MAX_ALTITUDE  = 315
-AltitudeHold.HARD_CEILING  = 318   -- above this, force minimum burner amount regardless of target/output
+-- Last-resort override independent of the outer loops: above this world
+-- height, force minimum burner amount so the ship cannot push past the
+-- sensor/world ceiling (320). MAX_ALTITUDE on AltitudeHold sits below this
+-- to leave braking margin for the altitude outer loop.
+VerticalSpeedHold.HARD_CEILING = 318
 
 -- Burner amount range comes from the shared BURNER_AMOUNT_RANGE (util.lua) so
 -- this controller's clamping/anti-windup always agrees with what BurnerBank
 -- (flight.lua) actually sends to the peripherals.
-
--- Outer loop: metres of desired vertical speed per metre of altitude error,
--- clamped asymmetrically since burners have far more climb authority than
--- descend authority (descending just means less heat, not active cooling).
-AltitudeHold.APPROACH_GAIN    = 0.15
-AltitudeHold.MAX_CLIMB_RATE   = 3.0   -- m/s, tune in-game
-AltitudeHold.MAX_DESCENT_RATE = 2.0   -- m/s, tune in-game
-
--- Altitude errors within this margin command zero desired rate instead of a
--- tiny nonzero one. Without this, sensor/physics noise near the setpoint
--- keeps commanding a small trickling rate, which the (well-tuned) rate loop
--- faithfully tracks, causing a slow hunt/oscillation around the target. The
--- error is "shrunk" by the deadband rather than hard-zeroed outside it, so
--- desiredRate stays continuous at the band edge (no new discontinuity).
--- This only changes the outer loop's rate *setpoint*; it does not touch the
--- inner loop's gains, integral, or slew logic, so vertical-speed tracking
--- behavior is unaffected.
-AltitudeHold.DEADBAND = 3.0   -- metres, tune in-game
-
--- Inner loop: PI on vertical-speed error, producing a burner amount.
-AltitudeHold.RATE_P_GAIN  = 40.0
-AltitudeHold.RATE_I_GAIN  = 10.0
-AltitudeHold.RATE_I_LIMIT = 200.0
+VerticalSpeedHold.RATE_P_GAIN  = 40.0
+VerticalSpeedHold.RATE_I_GAIN  = 10.0
+VerticalSpeedHold.RATE_I_LIMIT = 200.0
 
 -- Slew limit: burner amount may increase at most this fast (per second) to
 -- avoid abrupt heat spikes that overshoot; decreases are never slew-limited
 -- since cutting heat is the safe direction.
-AltitudeHold.MAX_INCREASE_RATE = 150.0
+VerticalSpeedHold.MAX_INCREASE_RATE = 150.0
 
 local function isValidHeight(h)
     return type(h) == "number" and h == h and h > -1000 and h < 1000
@@ -175,41 +150,34 @@ local function isValidRate(v)
     return type(v) == "number" and v == v
 end
 
-function AltitudeHold:new(altitudeSensor)
-    local t = setmetatable({}, { __index = AltitudeHold })
-    t.sensor    = altitudeSensor
-    t.target    = AltitudeHold.MIN_ALTITUDE
-    t.integral  = ClampedIntegral:new(AltitudeHold.RATE_I_LIMIT)
+function VerticalSpeedHold:new(altitudeSensor)
+    local t = setmetatable({}, { __index = VerticalSpeedHold })
+    t.sensor     = altitudeSensor
+    t.integral   = ClampedIntegral:new(VerticalSpeedHold.RATE_I_LIMIT)
     t.lastAmount = BURNER_AMOUNT_RANGE.min
+    t.lastProposed = BURNER_AMOUNT_RANGE.min
+    t.lastRateError = 0
     t.lastClock  = nil
     t.fault      = false
+    t.slewLimited = false
     t.lastHeight = nil
     t.lastVerticalSpeed = nil
     return t
 end
 
--- Set an explicit target altitude, clamped to the operational range.
--- Deliberately does NOT reset the integral: the target changes continuously
--- as the lever moves, and the integral represents the burner amount the
--- controller has already found for the current regime. Resetting it on
--- every lever nudge would discard that and reintroduce bump/overshoot.
-function AltitudeHold:setTarget(altitude)
-    self.target = Range:new(AltitudeHold.MIN_ALTITUDE, AltitudeHold.MAX_ALTITUDE):clamp(altitude)
-end
-
 -- Seed the integral from a known current burner amount for bumpless startup
 -- (e.g. when the control loop first engages). At the capture moment we don't
 -- know the actual rate error, so this assumes it is near zero.
-function AltitudeHold:captureTarget(currentAmount)
+function VerticalSpeedHold:capture(currentAmount)
     if currentAmount ~= nil then
-        self.integral:set(currentAmount / AltitudeHold.RATE_I_GAIN)
+        self.integral:set(currentAmount / VerticalSpeedHold.RATE_I_GAIN)
     end
     self.lastClock = nil  -- force dt recalibration on next read
 end
 
 -- Returns a burner amount clamped to BURNER_AMOUNT_RANGE. Call once per tick;
 -- this is stateful (integral, slew, dt) like VelocityHold:read().
-function AltitudeHold:read()
+function VerticalSpeedHold:read(desiredVS)
     local height = self.sensor.getHeight()
     local verticalSpeed = self.sensor.getVerticalSpeed()
 
@@ -224,38 +192,33 @@ function AltitudeHold:read()
 
     if not isValidHeight(height) or not isValidRate(verticalSpeed) then
         -- Sensor fault: freeze the last commanded amount rather than
-        -- integrating on bad data or guessing a new one.
+        -- integrating on bad data or guessing a new one. Zero the rate
+        -- error so the vertical props do not keep boosting on stale data.
         self.fault = true
+        self.lastRateError = 0
+        self.slewLimited = false
         return self.lastAmount
     end
     self.fault = false
+    self.lastHeight = height
+    self.lastVerticalSpeed = verticalSpeed
 
     -- Hard override: independent of target/controller, never allow the
-    -- computed output to push past the ceiling margin.
-    if height >= AltitudeHold.HARD_CEILING then
+    -- computed output to push past the ceiling margin. Cut props too.
+    if height >= VerticalSpeedHold.HARD_CEILING then
         self.integral:set(math.min(self.integral.value, 0))
         self.lastAmount = BURNER_AMOUNT_RANGE.min
+        self.lastProposed = BURNER_AMOUNT_RANGE.min
+        self.lastRateError = 0
+        self.slewLimited = false
         return self.lastAmount
     end
 
-    -- Outer loop: altitude error -> desired vertical speed.
-    -- Shrink the error by the deadband (rather than hard-zeroing inside it)
-    -- so desiredRate is continuous across the band edge and still shrinks
-    -- smoothly to zero as height approaches the target.
-    local altError = self.target - height
-    local shrunkError = 0
-    if altError > AltitudeHold.DEADBAND then
-        shrunkError = altError - AltitudeHold.DEADBAND
-    elseif altError < -AltitudeHold.DEADBAND then
-        shrunkError = altError + AltitudeHold.DEADBAND
-    end
-    local desiredRate = shrunkError * AltitudeHold.APPROACH_GAIN
-    desiredRate = Range:new(-AltitudeHold.MAX_DESCENT_RATE, AltitudeHold.MAX_CLIMB_RATE):clamp(desiredRate)
-
-    -- Inner loop: vertical speed error -> burner amount (PI)
-    local rateError = desiredRate - verticalSpeed
-    local proposed = (rateError * AltitudeHold.RATE_P_GAIN)
-        + ((self.integral.value + rateError * dt) * AltitudeHold.RATE_I_GAIN)
+    local rateError = desiredVS - verticalSpeed
+    local proposed = (rateError * VerticalSpeedHold.RATE_P_GAIN)
+        + ((self.integral.value + rateError * dt) * VerticalSpeedHold.RATE_I_GAIN)
+    self.lastProposed = proposed
+    self.lastRateError = rateError
 
     -- Conditional anti-windup: only accumulate if doing so wouldn't push the
     -- output further past a limit it has already saturated against.
@@ -265,17 +228,182 @@ function AltitudeHold:read()
         self.integral:add(rateError * dt)
     end
 
-    local amount = (rateError * AltitudeHold.RATE_P_GAIN) + (self.integral.value * AltitudeHold.RATE_I_GAIN)
+    local amount = (rateError * VerticalSpeedHold.RATE_P_GAIN)
+        + (self.integral.value * VerticalSpeedHold.RATE_I_GAIN)
     amount = BURNER_AMOUNT_RANGE:clamp(amount)
 
     -- Slew limit increases only; decreases apply immediately for safety.
+    -- slewLimited is true when heat could not follow the PI this tick
+    -- (slew cap or high saturation), so leftover climb can go to the props.
+    self.slewLimited = willSaturateHigh
     if amount > self.lastAmount then
-        amount = math.min(amount, self.lastAmount + AltitudeHold.MAX_INCREASE_RATE * dt)
+        local slewed = math.min(amount, self.lastAmount + VerticalSpeedHold.MAX_INCREASE_RATE * dt)
+        if slewed < amount then
+            self.slewLimited = true
+        end
+        amount = slewed
     end
 
     self.lastAmount = amount
-    self.lastHeight = height
-    self.lastVerticalSpeed = verticalSpeed
-    self.lastDesiredRate = desiredRate
     return amount
+end
+
+-- Park the inner loop: sample sensors for the display, command minimum
+-- heat, and seed the integral so a later takeoff does not slam from a
+-- stale hover amount. Used once the hull is on the ground.
+function VerticalSpeedHold:holdOff()
+    local height = self.sensor.getHeight()
+    local verticalSpeed = self.sensor.getVerticalSpeed()
+    if isValidHeight(height) then
+        self.lastHeight = height
+    end
+    if isValidRate(verticalSpeed) then
+        self.lastVerticalSpeed = verticalSpeed
+    end
+    self.fault = not (isValidHeight(height) and isValidRate(verticalSpeed))
+    self.lastRateError = 0
+    self.slewLimited = false
+    self.lastAmount = BURNER_AMOUNT_RANGE.min
+    self.lastProposed = BURNER_AMOUNT_RANGE.min
+    self.integral:set(BURNER_AMOUNT_RANGE.min / VerticalSpeedHold.RATE_I_GAIN)
+    self.lastClock = nil
+    return self.lastAmount
+end
+
+-- AltitudeHold is the cruise outer loop: altitude error -> desired vertical
+-- speed (clamped, asymmetric). It does not command burners; VerticalSpeedHold
+-- tracks the rate it produces.
+AltitudeHold = {}
+
+-- Operational altitude range. MAX_ALTITUDE is deliberately below the true
+-- sensor/world ceiling (320) to leave braking margin; the last-resort cut
+-- is VerticalSpeedHold.HARD_CEILING.
+AltitudeHold.MIN_ALTITUDE = 60
+AltitudeHold.MAX_ALTITUDE = 315
+
+-- Outer loop: metres of desired vertical speed per metre of altitude error,
+-- clamped asymmetrically since burners have far more climb authority than
+-- descend authority (descending just means less heat, not active cooling).
+AltitudeHold.APPROACH_GAIN    = 0.15
+AltitudeHold.MAX_CLIMB_RATE   = 3.0   -- m/s, tune in-game
+AltitudeHold.MAX_DESCENT_RATE = 2.0   -- m/s, tune in-game
+
+-- Altitude errors within this margin command zero desired rate instead of a
+-- tiny nonzero one. Without this, sensor/physics noise near the setpoint
+-- keeps commanding a small trickling rate, which the (well-tuned) rate loop
+-- faithfully tracks, causing a slow hunt/oscillation around the target. The
+-- error is "shrunk" by the deadband rather than hard-zeroed outside it, so
+-- desiredRate stays continuous at the band edge (no new discontinuity).
+AltitudeHold.DEADBAND = 3.0   -- metres, tune in-game
+
+function AltitudeHold:new()
+    local t = setmetatable({}, { __index = AltitudeHold })
+    t.target = AltitudeHold.MIN_ALTITUDE
+    t.lastDesiredRate = 0
+    return t
+end
+
+-- Set an explicit target altitude, clamped to the operational range.
+-- Deliberately does NOT reset the VS-hold integral: the target changes
+-- continuously as the lever moves, and the integral represents the burner
+-- amount the inner loop has already found for the current regime.
+function AltitudeHold:setTarget(altitude)
+    self.target = Range:new(AltitudeHold.MIN_ALTITUDE, AltitudeHold.MAX_ALTITUDE):clamp(altitude)
+end
+
+-- Outer loop only: altitude error -> desired vertical speed.
+function AltitudeHold:desiredRate(height)
+    if not isValidHeight(height) then
+        return self.lastDesiredRate
+    end
+    local altError = self.target - height
+    local shrunkError = 0
+    if altError > AltitudeHold.DEADBAND then
+        shrunkError = altError - AltitudeHold.DEADBAND
+    elseif altError < -AltitudeHold.DEADBAND then
+        shrunkError = altError + AltitudeHold.DEADBAND
+    end
+    local desiredRate = shrunkError * AltitudeHold.APPROACH_GAIN
+    desiredRate = Range:new(-AltitudeHold.MAX_DESCENT_RATE, AltitudeHold.MAX_CLIMB_RATE):clamp(desiredRate)
+    self.lastDesiredRate = desiredRate
+    return desiredRate
+end
+
+-- VNAV outer-loop helpers shared by landing flare and cruise terrain
+-- avoidance. Optical sensors never drive an actuator directly; they only
+-- shape the desiredVS that VerticalSpeedHold tracks.
+VNav = {}
+
+VNav.CLEARANCE              = 12.0  -- metres AGL; well outside AltitudeHold.DEADBAND
+VNav.LANDING_APPROACH_SINK  = -AltitudeHold.MAX_DESCENT_RATE  -- m/s while no optical hit
+VNav.LANDING_SINK           = -1.0  -- m/s at first contact; flare starts here
+VNav.OPTICAL_RANGE          = 15.0  -- metres; flare starts from first contact / this range
+VNav.PROP_DEADBAND  = 0.2   -- m/s; ignore tiny rate errors so props stay off at hover
+VNav.PROP_GAIN      = 5.0   -- prop power per m/s of positive rate error (3 m/s -> 15)
+VNav.PROP_MAX_POWER = 15
+
+-- Worst-case AGL: minimum getDistance() among sensors that hasHit().
+-- A miss means "beyond range", never 0. Returns agl, hasGround.
+function readWorstAgl(sensors)
+    local agl = nil
+    for _, sensor in ipairs(sensors) do
+        if sensor ~= nil and sensor.hasHit() then
+            local distance = sensor.getDistance()
+            if type(distance) == "number" and distance == distance then
+                if agl == nil or distance < agl then
+                    agl = distance
+                end
+            end
+        end
+    end
+    if agl == nil then
+        return nil, false
+    end
+    return agl, true
+end
+
+-- Ship-measured hull-on-ground AGL; see SHIP.VNAV.touchdownAgl in config.lua.
+local function touchdownAgl()
+    return SHIP.VNAV.touchdownAgl
+end
+
+-- True once a downward sensor reports AGL at or below the measured
+-- hull-on-ground height. Used to latch landed and cut heat.
+function isTouchdown(agl, hasGround)
+    return hasGround and agl <= touchdownAgl()
+end
+
+-- Lever 0: fast sink until ground contact, then linear flare from
+-- LANDING_SINK at first contact (~OPTICAL_RANGE) to 0 m/s at touchdown.
+function landingDesiredVS(agl, hasGround)
+    if not hasGround then
+        return VNav.LANDING_APPROACH_SINK
+    end
+    local settle = touchdownAgl()
+    local span = VNav.OPTICAL_RANGE - settle
+    local t = (agl - settle) / span
+    t = Range:new(0, 1):clamp(t)
+    return VNav.LANDING_SINK * t
+end
+
+-- Cruise terrain override: climb demand when worst-case AGL is below
+-- CLEARANCE. Returns 0 when there is no hit or AGL is at/above clearance.
+function terrainClimbVS(agl, hasGround)
+    if not hasGround or agl >= VNav.CLEARANCE then
+        return 0
+    end
+    local climb = (VNav.CLEARANCE - agl) * AltitudeHold.APPROACH_GAIN
+    return Range:new(0, AltitudeHold.MAX_CLIMB_RATE):clamp(climb)
+end
+
+-- No-integral leftover boost. Positive rateError only; negative error
+-- (need more sink) never spins the vertical props.
+function verticalPropPower(rateError, slewLimited, hasGround)
+    if rateError == nil or rateError <= VNav.PROP_DEADBAND then
+        return 0
+    end
+    if not (slewLimited or hasGround) then
+        return 0
+    end
+    return Range:new(0, VNav.PROP_MAX_POWER):clamp(rateError * VNav.PROP_GAIN)
 end
