@@ -68,20 +68,20 @@ VelocityHold.GAIN    = 15.0  -- proportional gain; tune as needed
 VelocityHold.I_GAIN  = 2.0   -- integral gain; tune as needed
 VelocityHold.I_LIMIT = 15.0  -- clamps the integral to prevent windup
 
-function VelocityHold:new(velocitySensor, onOutput, minOutput, maxOutput)
+function VelocityHold:new(velocitySensor, minOutput, maxOutput)
     local t = setmetatable({}, { __index = VelocityHold })
     t.sensor   = velocitySensor
     t.target   = 0
     t.integral = ClampedIntegral:new(VelocityHold.I_LIMIT)
-    t.onOutput = onOutput    -- optional callback(value) fired when a power value is computed
     t.output   = Range:new(minOutput or 0, maxOutput or VelocityHold.I_LIMIT)
     return t
 end
 
--- Set an explicit target velocity (e.g. from a number input: hold:setTarget(10))
+-- Set an explicit target velocity. Deliberately does NOT reset the integral:
+-- the throttle lever changes continuously, and the integral is the power the
+-- controller has already found. Resetting on every notch would bump output.
 function VelocityHold:setTarget(velocity)
     self.target = velocity
-    self.integral:reset()  -- reset integral on target change to avoid windup carry-over
 end
 
 -- Nudge the target velocity by a small amount without resetting the integral.
@@ -110,7 +110,6 @@ function VelocityHold:read()
     self.integral:add(error)
     local value = (error * VelocityHold.GAIN) + (self.integral.value * VelocityHold.I_GAIN)
     value = self.output:clamp(value)
-    if self.onOutput then self.onOutput(value) end
     return value
 end
 

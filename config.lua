@@ -10,8 +10,13 @@
 -- Each peripheral role is documented with a comment giving its type and a
 -- short description, immediately above the string ID.
 
--- Hull / sensor geometry (not peripheral IDs).
+-- Hull / sensor geometry and ship-measured limits (not peripheral IDs).
 SHIP = {
+    LNAV = {
+        -- Target velocity (m/s) at throttle lever 15. Lever 0 is stop.
+        -- Tune after a flight if this is short of the hull's cruise.
+        maxSpeed = 2.0,
+    },
     VNAV = {
         -- Optical AGL (metres) when the hull is sitting on the ground.
         -- Flare completes here; VNAV then latches landed and cuts heat.
@@ -34,7 +39,8 @@ PERIPHERALS = {
         leftPropellerTransmission = "analog_transmission_8",
 
         -- type: throttle_lever
-        -- Manual throttle input; also the velocity target source captured when engaging velocity hold.
+        -- Velocity setpoint: position 0-15 maps onto 0 .. SHIP.LNAV.maxSpeed.
+        -- Detent 0 is stop. Driven to 0 via setSignal when nav arrives.
         throttleLever = "throttle_lever_7",
 
         -- type: velocity_sensor

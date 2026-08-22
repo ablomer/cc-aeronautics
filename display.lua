@@ -9,8 +9,6 @@ local COL_LABEL    = colors.lightGray
 local COL_VALUE    = colors.white
 local COL_MANUAL   = colors.yellow
 local COL_HOLD     = colors.green
-local COL_BTN_BG   = colors.gray
-local COL_BTN_TEXT = colors.white
 local COL_NAV      = colors.cyan
 local COL_TERRAIN  = colors.orange
 local COL_FLARE    = colors.cyan
@@ -27,12 +25,6 @@ local BORDER_TOP = "\xc9" .. string.rep("\xcd", W - 2) .. "\xbb"
 local BORDER_MID = "\xcc" .. string.rep("\xcd", W - 2) .. "\xb9"
 local BORDER_BTM = "\xc8" .. string.rep("\xcd", W - 2) .. "\xbc"
 local BORDER_ROW = "\xba" .. string.rep(" ",    W - 2) .. "\xba"
-
--- Button hit regions (x1, x2, y) — only active in hold mode
-local BTN_DEC   = { x1 = 26, x2 = 30, y = 8 }  -- [ - ]
-local BTN_INC   = { x1 = 32, x2 = 36, y = 8 }  -- [ + ]
-local BTN_ZERO  = { x1 = 38, x2 = 42, y = 8 }  -- [ 0 ]
-local BTN_TWO   = { x1 = 44, x2 = 48, y = 8 }  -- [ 2 ]
 
 local function drawBorderLine(term, y, line)
     term.setCursorPos(1, y)
@@ -56,12 +48,6 @@ local function writeLabel(term, x, y, label)
     writeAt(term, x, y, label, COL_LABEL)
 end
 
-local function drawButton(term, x, y, label)
-    writeAt(term, x, y, label, COL_BTN_TEXT, COL_BTN_BG)
-    -- restore background after button
-    term.setBackgroundColor(COL_BG)
-end
-
 function FlightDisplay:new()
     local t = setmetatable({}, { __index = FlightDisplay })
     t.term = term
@@ -71,21 +57,11 @@ function FlightDisplay:new()
     return t
 end
 
--- Returns the button action for a click, or nil.
-function FlightDisplay:hitTest(x, y)
-    if x >= BTN_DEC.x1  and x <= BTN_DEC.x2  and y == BTN_DEC.y  then return "dec"  end
-    if x >= BTN_INC.x1  and x <= BTN_INC.x2  and y == BTN_INC.y  then return "inc"  end
-    if x >= BTN_ZERO.x1 and x <= BTN_ZERO.x2 and y == BTN_ZERO.y then return "zero" end
-    if x >= BTN_TWO.x1  and x <= BTN_TWO.x2  and y == BTN_TWO.y  then return "two"  end
-    return nil
-end
-
 function FlightDisplay:update(state)
     -- state = {
     --   velocity: number (m/s)
-    --   throttle: number (0-15)
-    --   holdMode: boolean
-    --   targetVelocity: number|nil (only relevant in hold mode)
+    --   throttle: number (0-15 lever notch)
+    --   targetVelocity: number (m/s, from the throttle lever)
     --   steeringAngle: number (-180 to 180, degrees)
     --   navActive: boolean
     --   navBearing: number|nil (degrees, only when navActive)
@@ -127,11 +103,7 @@ function FlightDisplay:update(state)
     -- Row 5: throttle mode / steering mode
     drawRow(t, 5)
     writeLabel(t, 3, 5, "VELOCITY")
-    if state.holdMode then
-        writeAt(t, 12, 5, "[ HOLD ]  ", COL_HOLD)
-    else
-        writeAt(t, 12, 5, "[ MANUAL ]", COL_MANUAL)
-    end
+    writeAt(t, 12, 5, "[ HOLD ]  ", COL_HOLD)
     writeLabel(t, 24, 5, "STEER")
     if state.navSteering then
         writeAt(t, 30, 5, "[ AUTO ]  ", COL_NAV)
@@ -147,16 +119,10 @@ function FlightDisplay:update(state)
     writeLabel(t, 3, 7, "VELOCITY")
     writeAt(t, 14, 7, string.format("%-10s", string.format("%.2f m/s", state.velocity)))
 
-    -- Row 8: target velocity with buttons (hold mode only) or blank
+    -- Row 8: target velocity from the throttle lever
     drawRow(t, 8)
-    if state.holdMode and state.targetVelocity ~= nil then
-        writeLabel(t, 3, 8, "TARGET  ")
-        writeAt(t, 14, 8, string.format("%-10s", string.format("%.2f m/s", state.targetVelocity)), COL_HOLD)
-        drawButton(t, BTN_DEC.x1,  8, "[ - ]")
-        drawButton(t, BTN_INC.x1,  8, "[ + ]")
-        drawButton(t, BTN_ZERO.x1, 8, "[ 0 ]")
-        drawButton(t, BTN_TWO.x1,  8, "[ 2 ]")
-    end
+    writeLabel(t, 3, 8, "TARGET  ")
+    writeAt(t, 14, 8, string.format("%-10s", string.format("%.2f m/s", state.targetVelocity or 0)), COL_HOLD)
 
     -- Row 9: throttle
     drawRow(t, 9)
