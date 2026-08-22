@@ -393,6 +393,8 @@ VNav = {}
 VNav.CLEARANCE              = 12.0  -- metres AGL; well outside AltitudeHold.DEADBAND
 VNav.LANDING_APPROACH_SINK  = -AltitudeHold.MAX_DESCENT_RATE  -- m/s while no optical hit
 VNav.LANDING_SINK           = -1.0  -- m/s at first contact; flare starts here
+VNav.LANDING_SETTLE_SINK    = -0.2  -- m/s held until latch; 0 at settle would hover above it
+VNav.TOUCHDOWN_MARGIN       = 0.3   -- metres; latch a little above the rest reading
 VNav.OPTICAL_RANGE          = 15.0  -- metres; flare starts from first contact / this range
 VNav.PROP_DEADBAND  = 0.2   -- m/s; ignore tiny rate errors so props stay off at hover
 VNav.PROP_GAIN      = 5.0   -- prop power per m/s of positive rate error (3 m/s -> 15)
@@ -424,22 +426,30 @@ local function touchdownAgl()
 end
 
 -- True once a downward sensor reports AGL at or below the measured
--- hull-on-ground height. Used to latch landed and cut heat.
+-- hull-on-ground height (plus a small margin for sensor/hover offset).
 function isTouchdown(agl, hasGround)
-    return hasGround and agl <= touchdownAgl()
+    return hasGround and agl <= touchdownAgl() + VNav.TOUCHDOWN_MARGIN
 end
 
 -- Lever 0: fast sink until ground contact, then linear flare from
--- LANDING_SINK at first contact (~OPTICAL_RANGE) to 0 m/s at touchdown.
+-- LANDING_SINK at first contact (~OPTICAL_RANGE) toward settle. Never
+-- commands 0 before latch: a zero DVS at touchdownAgl just hovers there.
 function landingDesiredVS(agl, hasGround)
     if not hasGround then
         return VNav.LANDING_APPROACH_SINK
     end
     local settle = touchdownAgl()
     local span = VNav.OPTICAL_RANGE - settle
+    if span <= 0 then
+        return VNav.LANDING_SETTLE_SINK
+    end
     local t = (agl - settle) / span
     t = Range:new(0, 1):clamp(t)
-    return VNav.LANDING_SINK * t
+    local desired = VNav.LANDING_SINK * t
+    if desired > VNav.LANDING_SETTLE_SINK then
+        desired = VNav.LANDING_SETTLE_SINK
+    end
+    return desired
 end
 
 -- Cruise terrain override: climb demand when worst-case AGL is below

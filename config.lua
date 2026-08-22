@@ -19,8 +19,8 @@ SHIP = {
     },
     VNAV = {
         -- Optical AGL (metres) when the hull is sitting on the ground.
-        -- Flare completes here; VNAV then latches landed and cuts heat.
-        -- Measured on this ship: optical_sensor_0 reads 0.8 m at rest.
+        -- Flare keeps a residual sink through this height, then latches
+        -- landed and cuts heat. Measure at rest, not in the hover.
         touchdownAgl = 2.0,
     },
 }
