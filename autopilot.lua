@@ -482,12 +482,12 @@ end
 -- stabilizer angle pitches the hull the wrong way.
 PitchHold = {}
 
-PitchHold.GAIN     = 2.0    -- stabilizer deg per deg of pitch error
+PitchHold.GAIN     = 6.0    -- stabilizer deg per deg of pitch outside the deadband
 PitchHold.D_GAIN   = 0.4    -- stabilizer deg per deg/s of pitch rate (damping)
-PitchHold.I_GAIN   = 0.15   -- stabilizer deg per degree-second of accumulated error
-PitchHold.I_LIMIT  = 20.0   -- degree-seconds; I term max is I_LIMIT * I_GAIN (3.0)
+PitchHold.I_GAIN   = 2.0    -- stabilizer deg per degree-second; 2° residual ~4°/s of trim
+PitchHold.I_LIMIT  = 22.5   -- degree-seconds; I term max is I_LIMIT * I_GAIN (45)
 PitchHold.I_BAND   = 10.0   -- degrees; only integrate near level
-PitchHold.DEADBAND = 0.5    -- degrees; pitch errors within this range command 0
+PitchHold.DEADBAND = 0.3    -- degrees; P drops to 0 here, I holds the trim angle
 
 -- CC peripherals may return a list or multiple values. Accept either.
 local function unpackReading(first, second, third)
@@ -543,20 +543,26 @@ function PitchHold:read()
 
     local dt = stepClock(self, 0.1)
 
-    -- Target is level (0). Pitch is already the error.
-    if math.abs(pitch) <= PitchHold.DEADBAND then
-        self.integral:reset()
-        self.lastOutput = 0
-        return 0
+    -- Target is level (0), same-sign command. A leftover pitch is almost
+    -- always a trim problem: the hull needs a nonzero stab angle at
+    -- equilibrium. Zeroing the command (or the integral) inside the
+    -- deadband dumps that trim and the pitch walks right back out.
+    -- Shrink P to 0 across the band so the edge is continuous; freeze I
+    -- inside the band and keep integrating a residual until we get there.
+    local shrunk = 0
+    if pitch > PitchHold.DEADBAND then
+        shrunk = pitch - PitchHold.DEADBAND
+    elseif pitch < -PitchHold.DEADBAND then
+        shrunk = pitch + PitchHold.DEADBAND
     end
 
-    if math.abs(pitch) <= PitchHold.I_BAND then
+    if math.abs(pitch) > PitchHold.I_BAND then
+        self.integral:reset()
+    elseif math.abs(pitch) > PitchHold.DEADBAND then
         self.integral:add(pitch * dt)
-    else
-        self.integral:reset()
     end
 
-    local value = (pitch * PitchHold.GAIN)
+    local value = (shrunk * PitchHold.GAIN)
         + (self.integral.value * PitchHold.I_GAIN)
         + (wx * PitchHold.D_GAIN)
     value = self.travel:clamp(value)

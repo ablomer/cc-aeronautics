@@ -27,7 +27,7 @@ SHIP = {
 
         -- Flip if nav locks at ~180° (inverted heading loop) or the wheel
         -- yaws the hull the wrong way. Positive steer should yaw right.
-        invertSteer = true,
+        invertSteer = false,
 
         -- Wheel angles within this many degrees of center read as 0.
         steeringDeadzone = 1.0,
