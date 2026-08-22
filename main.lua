@@ -93,10 +93,16 @@ local function leverToTargetVelocity(leverPosition)
 end
 
 local function controlUpdate()
-    -- Throttle lever is always a velocity setpoint (0 = stop).
+    -- Throttle lever is always a velocity setpoint. Detent 0 parks the loop
+    -- rather than holding 0 m/s: the props cannot reverse, so a residual
+    -- integral there would just push thrust at zero error.
     local leverState = throttleLever.getState()
-    velocityHold:setTarget(leverToTargetVelocity(leverState))
-    cachedSpeed = velocityHold:read()
+    if leverState == 0 then
+        cachedSpeed = velocityHold:holdOff()
+    else
+        velocityHold:setTarget(leverToTargetVelocity(leverState))
+        cachedSpeed = velocityHold:read()
+    end
 
     local leftPower, rightPower = allocatePropMix(
         cachedSpeed,

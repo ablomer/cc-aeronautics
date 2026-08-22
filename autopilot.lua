@@ -2,14 +2,24 @@ require("util")
 require("config")
 
 -- BearingHold steers the ship towards a navigation target by computing the
--- bearing error and producing a PI steering output in [-1, 1].
--- Its read() method is compatible as a MixerChannel input.
+-- bearing error and producing a PID steering output in [-1, 1].
+-- The D term is what keeps the hull from swinging past the target at speed:
+-- proportional alone commands full lock right up to the zero crossing, and
+-- the ship still carries yaw rate through it.
 BearingHold = {}
 
 BearingHold.GAIN       = 1 / 45    -- proportional; maps ±45° error to ±1.0 (10° → ~0.22)
-BearingHold.I_GAIN     = 0.04      -- output per degree-second of accumulated error
-BearingHold.I_LIMIT    = 20.0      -- degree-seconds; I term max is I_LIMIT * I_GAIN (0.8)
+BearingHold.D_GAIN     = 0.035     -- output per degree/second of closing rate (damping);
+                                   -- raise if it still overshoots, lower if it crawls in
+BearingHold.D_SMOOTH   = 0.4       -- rate low-pass weight; the bearing reading is coarse,
+                                   -- so an unfiltered derivative chatters at this gain
+BearingHold.I_GAIN     = 0.02      -- output per degree-second of accumulated error
+BearingHold.I_LIMIT    = 10.0      -- degree-seconds; I term max is I_LIMIT * I_GAIN (0.2)
+BearingHold.I_BAND     = 20.0      -- degrees; only integrate near the target, so big
+                                   -- turns cannot wind up and then drive an overshoot
 BearingHold.MIN_OUTPUT = 0.15      -- minimum effective output magnitude to overcome drag
+BearingHold.STUCK_RATE = 2.0       -- deg/s; below this the hull is not really turning,
+                                   -- so MIN_OUTPUT may kick it off a steady-state hang
 BearingHold.DEADBAND   = 2.0       -- degrees; bearing errors within this range are ignored
 
 function BearingHold:new(navTable)
@@ -17,6 +27,7 @@ function BearingHold:new(navTable)
     t.navTable  = navTable
     t.integral  = ClampedIntegral:new(BearingHold.I_LIMIT)
     t.lastBearing = nil
+    t.lastRate = 0
     t.lastClock = nil
     return t
 end
@@ -27,13 +38,16 @@ end
 function BearingHold:captureState()
     if not self.navTable.hasTarget() then return end
     self.integral:reset()
+    self.lastBearing = nil  -- no stale rate across an engagement gap
+    self.lastRate = 0
 end
 
--- Returns a PI steering value in [-1, 1] based on bearing error, or 0 if no target.
--- Compatible as a MixerChannel input read function.
+-- Returns a PID steering value in [-1, 1] based on bearing error, or 0 if no
+-- target. Call once per tick; the derivative term is stateful.
 function BearingHold:read()
     if not self.navTable.hasTarget() then
         self.lastBearing = nil
+        self.lastRate    = 0
         self.lastOutput  = nil
         self.integral:reset()
         return 0
@@ -41,8 +55,19 @@ function BearingHold:read()
     local bearing = self.navTable.getBearing()
     -- Wrap to [-180, 180] so the ship always turns the short way
     bearing = ((bearing + 180) % 360) - 180
-    self.lastBearing = bearing
     local dt = stepClock(self, 0.1)
+
+    -- Bearing rate, wrapped so a ±180 crossing is not read as a huge slew,
+    -- then low-passed so the D term reacts to the swing and not to the
+    -- quantization step of a single reading.
+    if self.lastBearing ~= nil then
+        local delta = ((bearing - self.lastBearing + 180) % 360) - 180
+        local raw = delta / dt
+        self.lastRate = self.lastRate
+            + BearingHold.D_SMOOTH * (raw - self.lastRate)
+    end
+    self.lastBearing = bearing
+    local rate = self.lastRate
 
     -- Within deadband: reset integral and output zero
     if math.abs(bearing) <= BearingHold.DEADBAND then
@@ -50,17 +75,30 @@ function BearingHold:read()
         self.lastOutput = 0
         return 0
     end
-    -- Integrate in degree-seconds so I can actually wind up a residual
-    -- (the old add(bearing) with I_LIMIT 1 saturated in one tick and
-    -- contributed only ~0.01 of steering — a ~10° hang never closed).
-    self.integral:add(bearing * dt)
-    local value = (bearing * BearingHold.GAIN) + (self.integral.value * BearingHold.I_GAIN)
+
+    -- Integrate in degree-seconds, but only near the target. Outside I_BAND
+    -- the proportional term already commands most of the available lock, so
+    -- accumulating there just guarantees an overshoot on arrival.
+    if math.abs(bearing) <= BearingHold.I_BAND then
+        self.integral:add(bearing * dt)
+    else
+        self.integral:reset()
+    end
+
+    local value = (bearing * BearingHold.GAIN)
+        + (self.integral.value * BearingHold.I_GAIN)
+        + (rate * BearingHold.D_GAIN)
     value = Range:new(-1, 1):clamp(value)
-    -- Apply minimum output floor to overcome drag at small errors
-    if value > 0 and value < BearingHold.MIN_OUTPUT then
-        value = BearingHold.MIN_OUTPUT
-    elseif value < 0 and value > -BearingHold.MIN_OUTPUT then
-        value = -BearingHold.MIN_OUTPUT
+
+    -- Minimum output floor only when the hull is not already turning: this
+    -- exists to break a steady-state hang, not to force lock into a swing
+    -- that is already closing on the target.
+    if math.abs(rate) < BearingHold.STUCK_RATE then
+        if value > 0 and value < BearingHold.MIN_OUTPUT then
+            value = BearingHold.MIN_OUTPUT
+        elseif value < 0 and value > -BearingHold.MIN_OUTPUT then
+            value = -BearingHold.MIN_OUTPUT
+        end
     end
     self.lastOutput = value
     return value
@@ -97,6 +135,15 @@ function VelocityHold:nudgeTarget(delta)
     self.target = self.target + delta
 end
 
+-- Park the loop: command zero power and drop the accumulated integral.
+-- The propellers cannot reverse, so at the stop detent there is nothing for
+-- the integral to hold; leaving it would keep pushing thrust at zero error.
+function VelocityHold:holdOff()
+    self.target = 0
+    self.integral:reset()
+    return 0
+end
+
 -- Capture the current velocity as the target (used when engaging hold mode).
 -- Optionally pass the current throttle to seed the integral so output starts
 -- smoothly from the current power level rather than from zero.
@@ -113,7 +160,18 @@ end
 -- Compatible as a MixerChannel input read function.
 function VelocityHold:read()
     local error = self.target - self.sensor.getVelocity()
-    self.integral:add(error)
+
+    -- Conditional anti-windup: don't keep accumulating into a limit the
+    -- output has already saturated against, or the integral has to unwind
+    -- before the ship responds to the next lever change.
+    local proposed = (error * VelocityHold.GAIN)
+        + ((self.integral.value + error) * VelocityHold.I_GAIN)
+    local saturatedHigh = proposed > self.output.max and error > 0
+    local saturatedLow  = proposed < self.output.min and error < 0
+    if not (saturatedHigh or saturatedLow) then
+        self.integral:add(error)
+    end
+
     local value = (error * VelocityHold.GAIN) + (self.integral.value * VelocityHold.I_GAIN)
     value = self.output:clamp(value)
     return value
