@@ -2,12 +2,24 @@
 -- Uses speaker.playNote (instrument, volume, pitch). Never blocks the
 -- control loop: a missing speaker or a failed note is ignored.
 
+require("config")
+
 ShipAudio = {}
 
 -- Seconds between repeating alerts while the condition stays true.
 -- Mode-change cues fire immediately; the interval only spaces the repeats.
-ShipAudio.TERRAIN_INTERVAL = 1.5
-ShipAudio.FAULT_INTERVAL   = 2.0
+ShipAudio.FAULT_INTERVAL = 2.0
+
+-- Proximity: beep rate and pitch rise as AGL closes on
+-- SHIP.VNAV.touchdownAgl. Used during flare and while TERRAIN (ground
+-- protection) is commanding a climb. Starts at first optical contact
+-- (same band as VNav.OPTICAL_RANGE) and stops once VNAV latches landed.
+ShipAudio.PROXIMITY_START         = 15.0
+ShipAudio.PROXIMITY_INTERVAL_FAR  = 1.0
+ShipAudio.PROXIMITY_INTERVAL_NEAR = 0.12
+ShipAudio.PROXIMITY_PITCH_FAR     = 12
+ShipAudio.PROXIMITY_PITCH_NEAR    = 24
+ShipAudio.PROXIMITY_VOLUME        = 1.0
 
 -- Each cue is a list of {instrument, volume, pitch} notes played in one tick.
 -- Pitch is semitones 0-24 (0/12/24 = F#, 6/18 = C). Volume is 0.0-3.0.
@@ -79,10 +91,19 @@ function ShipAudio:new(speakers)
     t.lastVnav = nil
     t.lastNavActive = nil
     t.lastFault = false
-    t.lastTerrainWarn = nil
     t.lastFaultWarn = nil
+    t.lastProximityBeep = nil
     t:playCue("ready")
     return t
+end
+
+function ShipAudio:playNote(instrument, volume, pitch)
+    for _, speaker in ipairs(self.speakers) do
+        if speaker ~= nil then
+            -- pcall so a detached speaker or a rejected note cannot stall flight.
+            pcall(speaker.playNote, instrument, volume, pitch)
+        end
+    end
 end
 
 function ShipAudio:playCue(name)
@@ -90,19 +111,35 @@ function ShipAudio:playCue(name)
     if notes == nil then
         return
     end
-    for _, speaker in ipairs(self.speakers) do
-        if speaker ~= nil then
-            for _, note in ipairs(notes) do
-                -- pcall so a detached speaker or a rejected note cannot stall flight.
-                pcall(speaker.playNote, note[1], note[2], note[3])
-            end
-        end
+    for _, note in ipairs(notes) do
+        self:playNote(note[1], note[2], note[3])
     end
 end
 
 
+-- t is 1 at first contact and 0 at/below touchdown. Interval and pitch
+-- both lerp along that (faster + higher as the hull settles).
+function ShipAudio:proximityBeep(agl, now)
+    local settle = SHIP.VNAV.touchdownAgl
+    local span = ShipAudio.PROXIMITY_START - settle
+    local t = 0
+    if span > 0 then
+        t = (agl - settle) / span
+        if t < 0 then t = 0 elseif t > 1 then t = 1 end
+    end
+    local interval = ShipAudio.PROXIMITY_INTERVAL_NEAR
+        + t * (ShipAudio.PROXIMITY_INTERVAL_FAR - ShipAudio.PROXIMITY_INTERVAL_NEAR)
+    if self.lastProximityBeep ~= nil and now - self.lastProximityBeep < interval then
+        return
+    end
+    local pitch = ShipAudio.PROXIMITY_PITCH_NEAR
+        + t * (ShipAudio.PROXIMITY_PITCH_FAR - ShipAudio.PROXIMITY_PITCH_NEAR)
+    self:playNote("pling", ShipAudio.PROXIMITY_VOLUME, pitch)
+    self.lastProximityBeep = now
+end
+
 -- state uses the same snapshot as FlightDisplay:update:
---   lnavMode, vnavMode, navActive, altitudeFault
+--   lnavMode, vnavMode, navActive, altitudeFault, landing, agl
 function ShipAudio:update(state)
     local now = os.clock()
 
@@ -119,9 +156,6 @@ function ShipAudio:update(state)
         if cue then
             self:playCue(cue)
         end
-        if state.vnavMode == "terrain" then
-            self.lastTerrainWarn = now
-        end
     end
     self.lastVnav = state.vnavMode
 
@@ -129,13 +163,6 @@ function ShipAudio:update(state)
         self:playCue(state.navActive and "nav_acquire" or "nav_lost")
     end
     self.lastNavActive = state.navActive
-
-    if state.vnavMode == "terrain" then
-        if self.lastTerrainWarn == nil or now - self.lastTerrainWarn >= ShipAudio.TERRAIN_INTERVAL then
-            self:playCue("terrain")
-            self.lastTerrainWarn = now
-        end
-    end
 
     if state.altitudeFault then
         local justSet = not self.lastFault
@@ -146,4 +173,19 @@ function ShipAudio:update(state)
         end
     end
     self.lastFault = state.altitudeFault == true
+
+    -- Flare or TERRAIN climb, with optical AGL. Descent before first
+    -- contact and the landed latch stay silent so this does not fight
+    -- those cues. TERRAIN still gets a one-shot cowbell on engage.
+    local wantProximity = state.agl ~= nil and (
+        state.vnavMode == "terrain"
+        or (state.landing and state.vnavMode ~= "landed")
+    )
+    if wantProximity then
+        self:proximityBeep(state.agl, now)
+    else
+        self.lastProximityBeep = nil
+    end
+
 end
+
