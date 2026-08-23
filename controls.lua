@@ -26,52 +26,34 @@ function OnChangeOutput:invalidate()
 end
 
 
--- Each input is a table: { read = fn, weight = number }
--- weight defaults to 1.0 if omitted.
--- The final value is the sum of (input.read() * input.weight), clamped to [min, max].
--- Use a negative weight to invert an input (e.g. left propeller steering differential).
-MixerChannel = {}
-
-MixerChannel.DEFAULT_MIN = 0
-MixerChannel.DEFAULT_MAX = 15
-
-function MixerChannel:new(setFn, min, max, ...)
-    local t = setmetatable({}, { __index = MixerChannel })
-    t.setFn = setFn
-    t.min    = min or MixerChannel.DEFAULT_MIN
-    t.max    = max or MixerChannel.DEFAULT_MAX
-    t.inputs = { ... }  -- each: { read = fn, weight = number }
-    return t
+-- RPM differential a normalized steer command asks for. maxDiff is the
+-- differential at full lock; at maxDiff == maxRpm the props fully
+-- counter-rotate (left -maxRpm, right +maxRpm) for the fastest pivot.
+function steerDifferential(steer, maxDiff)
+    return maxDiff * steer
 end
 
-function MixerChannel:update()
-    local value = 0
-    for _, input in ipairs(self.inputs) do
-        value = value + (input.read() * (input.weight or 1.0))
+-- RPM left over for surge once the differential has taken its share.
+-- The surge loop needs this to know the ceiling it is really working
+-- against; see VelocityHold:setCeiling.
+function surgeHeadroom(steer, maxRpm, maxDiff)
+    local headroom = maxRpm - math.abs(steerDifferential(steer, maxDiff))
+    if headroom < 0 then
+        return 0
     end
-    value = math.max(self.min, math.min(self.max, value))
-    self.setFn(value)
+    return headroom
 end
 
--- Split a surge command and a steer command in [-1, 1] onto left/right
--- propeller RPM. maxDiff is the largest half-differential (maxRpm / 2).
---
--- Cruise (pivot == false): shrink the differential so both sides stay in
--- [0, maxRpm] and the mean stays at surge. Turns do not sag speed, and
--- a flying prop is never reversed.
--- Pivot (pivot == true): clamp independently in [-maxRpm, maxRpm] so the
--- stopped hull can yaw with opposite rotation. Speed hold is parked at 0.
-function allocatePropMix(surge, steer, maxRpm, maxDiff, pivot)
-    if pivot then
-        local right = surge + maxDiff * steer
-        local left  = surge - maxDiff * steer
-        right = math.max(-maxRpm, math.min(maxRpm, right))
-        left  = math.max(-maxRpm, math.min(maxRpm, left))
-        return left, right
-    end
-    local maxD = math.min(surge, maxRpm - surge, maxDiff)
-    if maxD < 0 then maxD = 0 end
-    local right = surge + maxD * steer
-    local left  = surge - maxD * steer
-    return left, right
+-- Split a surge command (RPM) and a steer command in [-1, 1] onto
+-- left/right propeller RPM, with yaw priority: the differential gets
+-- first claim on the RPM budget and surge is limited to the headroom
+-- that remains. That keeps the commanded turn rate the same at any
+-- throttle, instead of collapsing once the outside prop saturates.
+-- Clamping surge to the headroom guarantees both sides land inside
+-- [-maxRpm, maxRpm], so no per-side clamp is needed afterwards.
+function allocatePropMix(surge, steer, maxRpm, maxDiff)
+    local diff = steerDifferential(steer, maxDiff)
+    local headroom = surgeHeadroom(steer, maxRpm, maxDiff)
+    surge = math.max(-headroom, math.min(headroom, surge))
+    return surge - diff, surge + diff
 end

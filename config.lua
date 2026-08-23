@@ -21,16 +21,50 @@ SHIP = {
         -- this is the software ceiling the mixer and velocity loop share.
         maxRpm = 256,
 
+        -- RPM differential at full steering lock (steer = ±1). At maxRpm
+        -- the props fully counter-rotate for the fastest pivot, using the
+        -- whole -256..256 range. The mixer gives this first claim on the
+        -- budget and surge takes what is left, so turn authority does not
+        -- fall off with throttle. Lower this to soften the heading loop:
+        -- it scales RPM-per-degree without touching HeadingHold's gains.
+        maxSteerDiff = 128,
+
+        -- RPM differential while holding heading (wheel centered). The
+        -- full maxSteerDiff range is for commanded turns; using it to
+        -- chase a few degrees of error just weaves. 48 RPM is enough
+        -- to trim a biased hull at hover without spinning the props past ~50.
+        maxHoldDiff = 48,
+
+        -- RPM differential for a persistent hold error (beyond HOLD_FAR).
+        -- Cruise veer is stronger than hover; this is the extra trim
+        -- budget so a 10° droop can still close. Near-target taper
+        -- still keys off maxHoldDiff, so hover weave stays gone.
+        maxHoldFarDiff = 120,
+
         -- Positive RSC RPM is backward on this hull; invert so +command is forward.
         invertLeft = true,
         invertRight = true,
 
-        -- Flip if nav locks at ~180° (inverted heading loop) or the wheel
-        -- yaws the hull the wrong way. Positive steer should yaw right.
-        invertSteer = false,
+        -- Flip if the ship spins continuously instead of settling, or
+        -- the wheel yaws the hull the wrong way. Positive steer should
+        -- yaw right.
+        invertSteer = true,
 
         -- Wheel angles within this many degrees of center read as 0.
+        -- Applied before normalizing to [-1, 1].
         steeringDeadzone = 1.0,
+
+        -- Deg/s of heading-setpoint advance at full wheel lock.
+        -- Tune down if full lock routinely trips maxHeadingLead.
+        maxTurnRate = 20.0,
+
+        -- Power-curve exponent on |normalized wheel|. 1 is linear;
+        -- >1 gives finer control near center.
+        turnRateExponent = 1.7,
+
+        -- Max heading error (deg) the wheel-rate command is allowed
+        -- to grow. Always permits movement that reduces the error.
+        maxHeadingLead = 25.0,
     },
     VNAV = {
         -- Optical AGL (metres) when the hull is sitting on the ground.
@@ -67,28 +101,28 @@ PERIPHERALS = {
     LNAV = {
         -- type: Create rotational speed controller
         -- Drives the right propeller. setTargetSpeed is integer RPM in [-256, 256].
-        rightPropellerSpeedController = "Create_RotationSpeedController_2",
+        rightPropellerSpeedController = "Create_RotationSpeedController_5",
 
         -- type: Create rotational speed controller
         -- Drives the left propeller. setTargetSpeed is integer RPM in [-256, 256].
-        leftPropellerSpeedController = "Create_RotationSpeedController_1",
+        leftPropellerSpeedController = "Create_RotationSpeedController_4",
 
         -- type: throttle_lever
         -- Velocity setpoint: position 0-15 maps onto 0 .. SHIP.LNAV.maxSpeed.
         -- Detent 0 is stop. Driven to 0 via setSignal when nav arrives.
-        throttleLever = "throttle_lever_7",
+        throttleLever = "throttle_lever_9",
 
         -- type: velocity_sensor
         -- Reports current ship velocity, used by VelocityHold and shown on the display.
-        velocitySensor = "velocity_sensor_3",
+        velocitySensor = "velocity_sensor_4",
 
         -- type: steering_wheel
-        -- Manual steering input, read whenever nav (bearing hold) steering is not engaged.
-        steeringWheel = "steering_wheel_3",
+        -- Turn-rate command for heading hold when NAV is not steering.
+        steeringWheel = "steering_wheel_5",
 
         -- type: navigation_table
-        -- Provides nav target bearing/heading/distance; drives BearingHold autopilot steering.
-        navigationTable = "navigation_table_1",
+        -- Heading + compass bearing/distance; drives HeadingHold in NAV mode.
+        navigationTable = "navigation_table_2",
     },
 
     -- ------------------------
@@ -98,29 +132,29 @@ PERIPHERALS = {
         -- type: throttle_lever
         -- Lever 1-15 maps linearly onto the altitude range; detent 0 is land
         -- (fixed sink, then optical flare).
-        burnerLever = "throttle_lever_8",
+        burnerLever = "throttle_lever_10",
 
         -- type: altitude_sensor
         -- Reports current height and vertical speed; height feeds the altitude
         -- outer loop, vertical speed is tracked by VerticalSpeedHold.
-        altitudeSensor = "altitude_sensor_2",
+        altitudeSensor = "altitude_sensor_3",
 
         -- type: hot_air_burner (list)
         -- Heat sources; BurnerBank fans the commanded amount out to every burner in this list.
         burners = {
-            "hot_air_burner_2",
+            "hot_air_burner_3",
         },
 
         -- type: analog_transmission
         -- Drives all vertical propellers together (single shared transmission).
         -- Leftover +up boost when VerticalSpeedHold is short of desiredVS.
-        verticalPropellerTransmission = "analog_transmission_11",
+        verticalPropellerTransmission = "analog_transmission_12",
 
         -- type: optical_sensor (list)
         -- Downward sensors; worst-case (closest hasHit) AGL drives cruise
         -- terrain climb and the landing flare. Never wired to an actuator.
         opticalSensors = {
-            "optical_sensor_0",
+            "optical_sensor_1",
         },
     },
 
@@ -131,15 +165,15 @@ PERIPHERALS = {
         -- type: gimbal_sensor
         -- Reports body-frame pitch/roll (getAngles) and rates (getAngularRates).
         -- Pitch is xAngle, rotation about body-X; 0 = level.
-        gimbalSensor = "gimbal_sensor_0",
+        gimbalSensor = "gimbal_sensor_1",
 
         -- type: Create rotational speed controller
         -- Drives the stabilizer mechanical bearing. setTargetSpeed is integer RPM.
-        stabilizerSpeedController = "Create_RotationSpeedController_0",
+        stabilizerSpeedController = "Create_RotationSpeedController_3",
 
         -- type: Create mechanical bearing
         -- Reports the current stabilizer angle in degrees (positive = up).
-        stabilizerBearing = "Create_MechanicalBearing_0",
+        stabilizerBearing = "Create_MechanicalBearing_1",
     },
 
     -- ------------------------
@@ -150,7 +184,7 @@ PERIPHERALS = {
         -- Every speaker plays the same playNote cues for LNAV/VNAV
         -- transitions, nav acquire/lost, terrain warnings, and faults.
         speakers = {
-            "speaker_0",
+            "speaker_1",
         },
     },
 
@@ -160,14 +194,18 @@ PERIPHERALS = {
     DEBUG = {
         -- type: laser_pointer
         -- Introspected live via debug.lua's 'Laser sensor' menu entry.
-        laserSensor = "laser_pointer_1",
+        laserSensor = "laser_pointer_2",
 
         -- type: optical_sensor
         -- Same physical peripheral as VNAV.opticalSensors[1]; introspected via debug.lua's 'Optical sensor' menu entry.
-        opticalSensor = "optical_sensor_0",
+        opticalSensor = "optical_sensor_1",
 
         -- type: gimbal_sensor
         -- Same physical peripheral as ATT.gimbalSensor; introspected via debug.lua's 'Gimbal sensor' menu entry.
-        gimbalSensor = "gimbal_sensor_0",
+        gimbalSensor = "gimbal_sensor_1",
+
+        -- type: navigation_table
+        -- Same physical peripheral as LNAV.navigationTable; introspected via debug.lua's 'Navigation table' menu entry.
+        navigationTable = "navigation_table_2",
     },
 }

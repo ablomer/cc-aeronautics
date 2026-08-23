@@ -139,7 +139,7 @@ function ShipAudio:proximityBeep(agl, now)
 end
 
 -- state uses the same snapshot as FlightDisplay:update:
---   lnavMode, vnavMode, navActive, altitudeFault, landing, agl
+--   lnavMode, vnavMode, navActive, altitudeFault, lnavFault, landing, agl
 function ShipAudio:update(state)
     local now = os.clock()
 
@@ -164,7 +164,8 @@ function ShipAudio:update(state)
     end
     self.lastNavActive = state.navActive
 
-    if state.altitudeFault then
+    local anyFault = state.altitudeFault == true or state.lnavFault == true
+    if anyFault then
         local justSet = not self.lastFault
         local due = self.lastFaultWarn == nil or now - self.lastFaultWarn >= ShipAudio.FAULT_INTERVAL
         if justSet or due then
@@ -172,7 +173,7 @@ function ShipAudio:update(state)
             self.lastFaultWarn = now
         end
     end
-    self.lastFault = state.altitudeFault == true
+    self.lastFault = anyFault
 
     -- Flare or TERRAIN climb, with optical AGL. Descent before first
     -- contact and the landed latch stay silent so this does not fight

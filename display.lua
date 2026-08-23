@@ -1,3 +1,5 @@
+require("util")
+
 FlightDisplay = {}
 
 local W, H = 51, 19
@@ -15,7 +17,7 @@ local COL_FLARE    = colors.cyan
 
 local LNAV_MODE = {
     stop = { label = "[ STOP ]   ", color = COL_MANUAL },
-    hold = { label = "[ HOLD ]   ", color = COL_HOLD },
+    hold = { label = "[ HDG ]    ", color = COL_HOLD },
     nav  = { label = "[ NAV ]    ", color = COL_NAV },
 }
 
@@ -59,6 +61,12 @@ local function writeLabel(term, x, y, label)
     writeAt(term, x, y, label, COL_LABEL)
 end
 
+-- Round first, then wrap, so 359.7 prints as 000 instead of 360.
+local function fmtHdg(deg)
+    if not isFiniteNumber(deg) then return "--" end
+    return string.format("%03d", math.floor(deg + 0.5) % 360)
+end
+
 function FlightDisplay:new()
     local t = setmetatable({}, { __index = FlightDisplay })
     t.term = term
@@ -74,13 +82,17 @@ function FlightDisplay:update(state)
     --   throttle: number (0-15 lever notch)
     --   targetVelocity: number (m/s, from the throttle lever)
     --   lnavMode: "stop"|"hold"|"nav"
-    --   steeringAngle: number (-180 to 180, degrees)
+    --   steeringAngle: number (deadzoned wheel degrees)
+    --   heading: number|nil (compass heading, 0-359)
+    --   targetHeading: number (heading hold setpoint, 0-359)
+    --   commandedTurnRate: number (deg/s wheel slew; 0 in NAV/landed)
+    --   lnavFault: boolean
     --   navActive: boolean
     --   navBearing: number|nil (degrees, only when navActive)
-    --   navHeading: number|nil (degrees, only when navActive)
-    --   navOutput: number|nil (steering output in [-1,1], only when navActive)
+    --   navHeading: number|nil (same as heading; kept for older readers)
+    --   navOutput: number|nil (steering output in [-1,1])
     --   navDistance: number|nil (metres, only when navActive)
-    --   navSteering: boolean (true when autopilot is controlling steering)
+    --   navSteering: boolean (true when NAV is writing the heading setpoint)
     --   propeller1Rpm: number (last RPM sent to propeller 1)
     --   propeller2Rpm: number (last RPM sent to propeller 2)
     --   altitude: number (current height, m)
@@ -209,30 +221,37 @@ function FlightDisplay:update(state)
     writeLabel(t, 28, 13, "RPM")
     writeAt(t, 32, 13, string.format("%-6s", string.format("%d", state.stabRpm or 0)))
 
-    -- Rows 14+: nav when a table target exists
-    if state.navActive then
-        drawBorderLine(t, 14, BORDER_MID)
+    -- Rows 14-18: heading hold (always) + bearing/distance when a target exists
+    drawBorderLine(t, 14, BORDER_MID)
 
-        drawRow(t, 15)
-        writeLabel(t, 3, 15, "HDG     ")
-        writeAt(t, 14, 15, string.format("%-10s", string.format("%.1f deg", state.navHeading or 0)), COL_NAV)
-        writeLabel(t, 26, 15, "BRG   ")
-        writeAt(t, 34, 15, string.format("%-10s", string.format("%.1f deg", state.navBearing or 0)), COL_NAV)
+    drawRow(t, 15)
+    writeLabel(t, 3, 15, "HDG     ")
+    local hdgColor = state.lnavFault and colors.red or COL_VALUE
+    writeAt(t, 14, 15, string.format("%-10s", fmtHdg(state.heading)), hdgColor)
+    writeLabel(t, 26, 15, "TGT   ")
+    local tgtColor = state.navSteering and COL_NAV or COL_HOLD
+    writeAt(t, 34, 15, string.format("%-10s", fmtHdg(state.targetHeading)), tgtColor)
 
-        drawRow(t, 16)
-        writeLabel(t, 3, 16, "DIST    ")
-        writeAt(t, 14, 16, string.format("%-10s", string.format("%.1f m", state.navDistance or 0)), COL_NAV)
-        writeLabel(t, 26, 16, "STEER ")
-        writeAt(t, 34, 16, string.format("%-10s", string.format("%.2f", state.navOutput or 0)), COL_NAV)
+    drawRow(t, 16)
+    writeLabel(t, 3, 16, "RATE    ")
+    writeAt(t, 14, 16, string.format("%-10s", string.format("%+.1f", state.commandedTurnRate or 0)))
+    writeLabel(t, 26, 16, "STEER ")
+    writeAt(t, 34, 16, string.format("%-10s", string.format("%.2f", state.navOutput or 0)))
 
-        drawBorderLine(t, 17, BORDER_BTM)
-        for y = 18, 19 do
-            drawRow(t, y)
-        end
+    drawRow(t, 17)
+    writeLabel(t, 3, 17, "BRG     ")
+    if state.navActive and state.navBearing ~= nil then
+        writeAt(t, 14, 17, string.format("%-10s", string.format("%.1f deg", state.navBearing)), COL_NAV)
     else
-        drawBorderLine(t, 14, BORDER_BTM)
-        for y = 15, 19 do
-            drawRow(t, y)
-        end
+        writeAt(t, 14, 17, string.format("%-10s", "--"))
     end
+    writeLabel(t, 26, 17, "DIST  ")
+    if state.navActive and state.navDistance ~= nil then
+        writeAt(t, 34, 17, string.format("%-10s", string.format("%.1f m", state.navDistance)), COL_NAV)
+    else
+        writeAt(t, 34, 17, string.format("%-10s", "--"))
+    end
+
+    drawBorderLine(t, 18, BORDER_BTM)
+    drawRow(t, 19)
 end

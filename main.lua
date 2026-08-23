@@ -10,13 +10,13 @@ require("config")
 -- ------------------------
 -- LNAV
 -- ------------------------
-local propeller1 = Propeller:new(PERIPHERALS.LNAV.rightPropellerSpeedController, {
-    maxRpm = SHIP.LNAV.maxRpm,
-    invert = SHIP.LNAV.invertRight,
-})
-local propeller2 = Propeller:new(PERIPHERALS.LNAV.leftPropellerSpeedController, {
+local propeller1 = Propeller:new(PERIPHERALS.LNAV.leftPropellerSpeedController, {
     maxRpm = SHIP.LNAV.maxRpm,
     invert = SHIP.LNAV.invertLeft,
+})
+local propeller2 = Propeller:new(PERIPHERALS.LNAV.rightPropellerSpeedController, {
+    maxRpm = SHIP.LNAV.maxRpm,
+    invert = SHIP.LNAV.invertRight,
 })
 local throttleLever = peripheral.wrap(PERIPHERALS.LNAV.throttleLever)
 local velocitySensor = peripheral.wrap(PERIPHERALS.LNAV.velocitySensor)
@@ -45,7 +45,7 @@ end
 
 local MAX_POWER = 15  -- throttle / burner lever notches (still 0-15)
 local MAX_RPM = SHIP.LNAV.maxRpm
-local STEERING_OFFSET = MAX_RPM / 2  -- max differential at full steering lock
+local MAX_STEER_DIFF = SHIP.LNAV.maxSteerDiff  -- RPM differential at full lock
 local cachedSpeed = 0  -- computed once per tick to avoid double-calling velocityHold:read()
 local lastNavSteering = false
 
@@ -75,27 +75,33 @@ for _, speakerId in ipairs(PERIPHERALS.AUDIO.speakers) do
     table.insert(speakers, peripheral.wrap(speakerId))
 end
 local audio = ShipAudio:new(speakers)
-local bearingHold = BearingHold:new(navigationTable)
+local headingHold = HeadingHold:new(navigationTable, gimbal)
 
 local NAV_DISENGAGE_RANGE = 20  -- metres; hand steering back to wheel within this distance
 
--- Auto steering only while moving. Lever 0 is stop: velocity loop parked,
--- wheel still yaws in place (deadzone keeps props at 0 when centered).
+-- NAV writes the heading setpoint from the compass bearing whenever a
+-- target is resolved and farther than the arrival disk. No throttle gate:
+-- the hull can pivot to face the destination before the lever opens.
 local function wantNavSteering()
-    return throttleLever.getState() > 0
-        and navigationTable.hasTarget()
+    return navigationTable.hasTarget()
         and navigationTable.getDistanceToTarget() > NAV_DISENGAGE_RANGE
 end
 
-local function activeSteering()
-    local steer
-    if wantNavSteering() then
-        steer = bearingHold:read()
-    else
-        steer = steeringWheel:getAngle() / 180
-    end
+-- Wheel deflection -> commanded heading-slew rate (deg/s). Deadzone is
+-- already applied inside getNormalized(); the exponent gives finer
+-- control near center.
+local function wheelTurnRate()
+    local x = steeringWheel:getNormalized()
+    if x == 0 then return 0 end
+    local sign = x < 0 and -1 or 1
+    return sign * (math.abs(x) ^ SHIP.LNAV.turnRateExponent) * SHIP.LNAV.maxTurnRate
+end
+
+-- invertSteer is actuator-side only. Do not also flip the heading error
+-- or the loop will spin instead of settling.
+local function applySteerSign(steer)
     if SHIP.LNAV.invertSteer then
-        steer = -steer
+        return -steer
     end
     return steer
 end
@@ -115,51 +121,15 @@ local function leverToTargetVelocity(leverPosition)
 end
 
 local function controlUpdate()
-    -- Throttle lever is always a velocity setpoint. Detent 0 parks the
-    -- speed loop; the wheel can still pivot the hull in place.
-    local leverState = throttleLever.getState()
-    if leverState == 0 then
-        cachedSpeed = velocityHold:holdOff()
-    else
-        velocityHold:setTarget(leverToTargetVelocity(leverState))
-        cachedSpeed = velocityHold:read()
-    end
-    local leftRpm, rightRpm = allocatePropMix(
-        cachedSpeed,
-        activeSteering(),
-        MAX_RPM,
-        STEERING_OFFSET,
-        leverState == 0
-    )
-    propeller2:setSpeed(leftRpm)
-    propeller1:setSpeed(rightRpm)
-
-    local hasTarget = navigationTable.hasTarget()
-    local navSteering = wantNavSteering()
-
-    -- When nav steering engages, seed the integral from current bearing
-    if navSteering and not lastNavSteering then
-        bearingHold:captureState()
-    end
-
-    -- Arrive: zero the physical lever and the speed target together.
-    if lastNavSteering and not navSteering then
-        throttleLever.setSignal(0)
-        velocityHold:setTarget(0)
-    end
-    lastNavSteering = navSteering
-
-    -- VNAV: lever 0 is the landing detent (flare on worst-case AGL).
-    -- Lever 1-15 is altitude hold, with a terrain climb override from AGL.
+    -- VNAV preamble first: heading hold needs landedLatched, and the
+    -- first-tick captures share this latch.
     local burnerLeverState = burnerLever.getState()
     local isFirstTick = lastBurnerLever == nil
     local landing = burnerLeverState == 0
 
-    -- Bumpless startup: seed the VS-hold integral from the burners' current
-    -- commanded amount only on the very first tick, so the controller
-    -- doesn't start from zero and cause a jump.
     if isFirstTick then
         verticalSpeedHold:capture(burnerBank.lastAmount)
+        headingHold:captureHeading()
     end
 
     -- Retarget whenever the lever moves in hold (including the first tick
@@ -170,11 +140,74 @@ local function controlUpdate()
     lastBurnerLever = burnerLeverState
 
     local agl, hasGround = readWorstAgl(opticalSensors)
+    local wasLanded = landedLatched
     if not landing then
         landedLatched = false
     elseif isTouchdown(agl, hasGround) then
         landedLatched = true
     end
+    if wasLanded and not landedLatched then
+        headingHold:captureHeading()
+    end
+
+    -- Heading before surge: the yaw differential has first claim on the
+    -- RPM budget, so the velocity loop has to be told the ceiling that
+    -- leaves it before it integrates against a limit it cannot reach.
+    local hasTarget = navigationTable.hasTarget()
+    local navSteering = (not landedLatched) and wantNavSteering()
+
+    -- Freeze the heading setpoint on the current heading before this
+    -- tick's HDG read, so we do not track the last NAV target for one
+    -- more frame. Throttle is zeroed after the mix, same as before.
+    if lastNavSteering and not navSteering then
+        headingHold:captureHeading()
+    end
+
+    local commandedTurnRate = 0
+    local steer
+    if landedLatched then
+        steer = headingHold:holdOff()
+    elseif navSteering then
+        local heading = compassHeading(navigationTable.getHeading())
+        local bearing = navigationTable.getBearing()
+        if isFiniteNumber(heading) and isFiniteNumber(bearing) then
+            headingHold:setTarget(norm360(heading + wrap180(bearing)))
+        end
+        steer = headingHold:read(nil)
+    else
+        commandedTurnRate = wheelTurnRate()
+        steer = headingHold:read(commandedTurnRate)
+    end
+    steer = applySteerSign(steer)
+
+    -- Throttle lever is always a velocity setpoint. Detent 0 parks the
+    -- speed loop; heading hold still yaws the hull in place when airborne.
+    local leverState = throttleLever.getState()
+    local surgeCeiling = surgeHeadroom(steer, MAX_RPM, MAX_STEER_DIFF)
+    if leverState == 0 then
+        cachedSpeed = velocityHold:holdOff()
+    else
+        velocityHold:setTarget(leverToTargetVelocity(leverState))
+        velocityHold:setCeiling(surgeCeiling)
+        cachedSpeed = velocityHold:read()
+    end
+
+    local leftRpm, rightRpm = allocatePropMix(
+        cachedSpeed,
+        steer,
+        MAX_RPM,
+        MAX_STEER_DIFF
+    )
+    propeller1:setSpeed(leftRpm)
+    propeller2:setSpeed(rightRpm)
+
+    -- Arrive / NAV drop: zero the physical lever and the speed target
+    -- together. Heading was already frozen above.
+    if lastNavSteering and not navSteering then
+        throttleLever.setSignal(0)
+        velocityHold:setTarget(0)
+    end
+    lastNavSteering = navSteering
 
     local desiredVS
     local vnavMode
@@ -250,10 +283,14 @@ local function controlUpdate()
         targetVelocity = velocityHold.target,
         lnavMode       = lnavMode,
         steeringAngle  = steeringWheel:getAngle(),
+        heading        = headingHold.lastHeading,
+        targetHeading  = headingHold.target,
+        commandedTurnRate = commandedTurnRate,
+        lnavFault      = headingHold.fault,
         navActive      = hasTarget,
-        navBearing     = hasTarget and navigationTable.getBearing() or nil,
-        navHeading     = navigationTable.getHeading(),
-        navOutput      = bearingHold.lastOutput,
+        navBearing     = hasTarget and wrap180(navigationTable.getBearing()) or nil,
+        navHeading     = headingHold.lastHeading,
+        navOutput      = headingHold.lastOutput,
         navDistance    = hasTarget and navigationTable.getDistanceToTarget() or nil,
         navSteering    = navSteering,
         propeller1Rpm  = propeller1.lastSpeed,

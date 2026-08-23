@@ -90,6 +90,10 @@ local function runPeripheralDebug(peripheralName, label)
                     shown = formatValue(a)
                 end
                 print(string.format("%-20s %s", name, shown))
+                if name == "getHeading" and isFiniteNumber(a) then
+                    print(string.format("%-20s %s", "compassHeading",
+                        string.format("%.1f (0=N)", compassHeading(a))))
+                end
             else
                 print(string.format("%-20s <error: %s>", name, tostring(a)))
             end
@@ -186,6 +190,7 @@ local PROGRAMS = {
     { name = "Laser sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.laserSensor, "Laser sensor") end },
     { name = "Optical sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.opticalSensor, "Optical sensor") end },
     { name = "Gimbal sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.gimbalSensor, "Gimbal sensor") end },
+    { name = "Navigation table", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.navigationTable, "Navigation table") end },
     { name = "Stabilizer servo", run = runStabilizerServoDebug },
 }
 

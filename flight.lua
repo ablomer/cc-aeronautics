@@ -55,7 +55,8 @@ end
 
 -- SteeringWheel wraps the physical wheel so every reader sees a deadzoned
 -- angle. getAngle() is 0 inside the deadzone; lastRaw is the unfiltered
--- peripheral reading for debugging centering.
+-- peripheral reading for debugging centering. getMaxAngle is cached at
+-- construction (scroll-configurable 1..360) so getNormalized stays cheap.
 SteeringWheel = {}
 
 function SteeringWheel:new(peripheralId, opts)
@@ -63,6 +64,13 @@ function SteeringWheel:new(peripheralId, opts)
     t.wheel = peripheral.wrap(peripheralId)
     opts = opts or {}
     t.deadzone = opts.deadzone or 1.0
+    t.maxAngle = 180
+    if t.wheel ~= nil and t.wheel.getMaxAngle ~= nil then
+        local max = t.wheel.getMaxAngle()
+        if isFiniteNumber(max) and max > 0 then
+            t.maxAngle = max
+        end
+    end
     t.lastRaw = 0
     t.lastAngle = 0
     return t
@@ -80,6 +88,16 @@ function SteeringWheel:getAngle()
         self.lastAngle = raw
     end
     return self.lastAngle
+end
+
+-- Deadzoned wheel as a fraction of cached max deflection, in [-1, 1].
+function SteeringWheel:getNormalized()
+    local angle = self:getAngle()
+    if self.maxAngle <= 0 then return 0 end
+    local n = angle / self.maxAngle
+    if n > 1 then return 1 end
+    if n < -1 then return -1 end
+    return n
 end
 
 -- BurnerBank fans one commanded amount out to every hot air burner in the
@@ -112,10 +130,6 @@ Servo = {}
 Servo.DEADBAND = 1.0   -- deg; below the 1 RPM quantization floor there is no finer control
 Servo.APPROACH = 0.5   -- fraction of remaining error to close in one tick
 Servo.MIN_RPM  = 1     -- integer floor of setTargetSpeed
-
-local function isFiniteNumber(v)
-    return type(v) == "number" and v == v
-end
 
 function Servo:new(speedControllerId, bearingId, opts)
     local t = setmetatable({}, { __index = Servo })
