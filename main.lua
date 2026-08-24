@@ -21,6 +21,7 @@ local throttleLever = peripheral.wrap(PERIPHERALS.LNAV.throttleLever)
 local velocitySensor = findPeripheral("velocity_sensor")
 local steeringWheel = findPeripheral("steering_wheel")
 local navigationTable = findPeripheral("navigation_table")
+local gimbal = findPeripheral("gimbal_sensor")
 local thrustMixer = DifferentialThrustMixer:new(leftPropeller, rightPropeller, SHIP.LNAV)
 
 -- ------------------------
@@ -50,18 +51,14 @@ local landedLatched = false  -- stays true after touchdown until the lever leave
 -- ------------------------
 -- ATT
 -- ------------------------
-local gimbal = findOptionalPeripheral("gimbal_sensor")
 local stabilizer = Servo:new(
     PERIPHERALS.ATT.stabilizerSpeedController,
     PERIPHERALS.ATT.stabilizerBearing,
     SHIP.ATT
 )
--- Pitch hold needs the gimbal, RSC, and bearing. Any missing piece
--- disables the system rather than faulting.
-local attAvailable = gimbal ~= nil and stabilizer.available
-if not attAvailable and stabilizer.available then
-    stabilizer:stop()
-end
+-- Pitch hold needs the stabilizer RSC and bearing. Either missing
+-- disables ATT rather than faulting. The gimbal is already required.
+local attAvailable = stabilizer.available
 local pitchHold = PitchHold:new(gimbal)
 local pitchSign = SHIP.ATT.invertPitch and -1 or 1
 
@@ -118,7 +115,8 @@ local function controlUpdate()
     end
 
     local steerSource, relativeBearing = selectHeadingCommand(navigationTable, steeringWheel)
-    local steerRequest = normalizedSteering(relativeBearing)
+    local yawRate = readYawRate(gimbal)
+    local steerRequest = dampedSteering(normalizedSteering(relativeBearing), yawRate)
     local mix = thrustMixer:apply(speedRequest, steerRequest)
     local heading = readStandardHeading(navigationTable)
 
@@ -176,14 +174,12 @@ local function controlUpdate()
     end
 
     -- ATT: hold gimbal pitch at 0 via the stabilizer servo. Skip the
-    -- loop when the gimbal, RSC, or bearing is missing. Park on the
-    -- ground so it does not fight the hull sitting still.
+    -- loop when the RSC or bearing is missing. Park on the ground so
+    -- it does not fight the hull sitting still.
     local attMode
     if not attAvailable then
         attMode = "none"
-        if gimbal ~= nil then
-            pitchHold:sense()
-        end
+        pitchHold:sense()
     elseif landedLatched then
         attMode = "off"
         pitchHold:captureState()
@@ -203,6 +199,7 @@ local function controlUpdate()
         heading        = heading,
         steerSource    = steerSource,
         relativeBearing = relativeBearing,
+        yawRate        = yawRate,
         requestedSpeed = mix.requestedSpeed,
         requestedSteer = mix.requestedSteer,
         requestedCommonRpm = mix.requestedCommonRpm,

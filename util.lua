@@ -96,17 +96,6 @@ function findPeripheral(ty)
     return found[1]
 end
 
--- At most one peripheral of this type. Returns nil if none (so the
--- caller can disable that system). Errors if more than one.
-function findOptionalPeripheral(ty)
-    local found = { peripheral.find(ty) }
-    if #found > 1 then
-        error("Expected one " .. ty .. " but found " .. #found
-            .. " (" .. peripheralNames(found) .. ")")
-    end
-    return found[1]
-end
-
 -- One or more peripherals of this type. Errors if none.
 function findPeripherals(ty)
     local found = { peripheral.find(ty) }

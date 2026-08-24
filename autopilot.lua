@@ -127,6 +127,19 @@ function selectHeadingCommand(navigationTable, steeringWheel)
     return "WHEEL", angle
 end
 
+-- Gimbal yaw rate about body-Y (deg/s). Nil when the sensor is
+-- missing or the reading is unusable; the damper then falls open-loop.
+function readYawRate(gimbal)
+    if gimbal == nil then
+        return nil
+    end
+    local _wx, wy = unpackReading(gimbal.getAngularRates())
+    if not isFiniteNumber(wy) then
+        return nil
+    end
+    return wy
+end
+
 -- Linear relative bearing -> normalized steering in [-1, 1].
 -- Deadband and full-authority angle come from SHIP.LNAV.
 function normalizedSteering(bearing)
@@ -153,6 +166,33 @@ function normalizedSteering(bearing)
         return -command
     end
     return command
+end
+
+-- Blend the pilot/nav steering request with a yaw-rate damper.
+-- Body +wy is a left turn (CCW about up); +steer is a right turn, so
+-- the measured rate is flipped unless invertYawDamp is set. At a
+-- request of 0 this is a stop-turn loop: leftover wy is braked until
+-- it sits inside yawDampDeadband. No gimbal -> returns the request.
+function dampedSteering(steerReq, yawRate)
+    steerReq = Range:new(-1, 1):clamp(steerReq or 0)
+    if not isFiniteNumber(yawRate) then
+        return steerReq
+    end
+    -- Right-turn-positive rate. Default: +wy (left) -> negative.
+    local measured = -yawRate
+    if SHIP.LNAV.invertYawDamp then
+        measured = yawRate
+    end
+    local deadband = SHIP.LNAV.yawDampDeadband
+    if math.abs(measured) <= deadband then
+        measured = 0
+    elseif measured > 0 then
+        measured = measured - deadband
+    else
+        measured = measured + deadband
+    end
+    local command = steerReq - measured * SHIP.LNAV.yawDampGain
+    return Range:new(-1, 1):clamp(command)
 end
 
 -- VerticalSpeedHold is the VNAV inner loop: vertical-speed error -> burner

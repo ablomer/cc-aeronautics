@@ -4,37 +4,77 @@ local W, H = 51, 19
 
 local COL_BG       = colors.black
 local COL_BORDER   = colors.gray
-local COL_HEADER   = colors.white
 local COL_LABEL    = colors.lightGray
 local COL_VALUE    = colors.white
+local COL_SELECTED = colors.orange
 local COL_MANUAL   = colors.yellow
 local COL_HOLD     = colors.green
 local COL_TERRAIN  = colors.orange
 local COL_FLARE    = colors.cyan
 
 local LNAV_MODE = {
-    stop = { label = "[ STOP ]   ", color = COL_MANUAL },
-    hold = { label = "[ HOLD ]   ", color = COL_HOLD },
+    stop = { label = "[STOP]", color = COL_MANUAL },
+    hold = { label = "[HOLD]", color = COL_HOLD },
 }
 
 local VNAV_MODE = {
-    hold    = { label = "[ HOLD ]   ", color = COL_HOLD },
-    land    = { label = "[ LAND ]   ", color = COL_MANUAL },
-    flare   = { label = "[ FLARE ]  ", color = COL_FLARE },
-    landed  = { label = "[ LANDED ] ", color = COL_HOLD },
-    terrain = { label = "[ TERRAIN ]", color = COL_TERRAIN },
+    hold    = { label = "[HOLD]",    color = COL_HOLD },
+    land    = { label = "[LAND]",    color = COL_MANUAL },
+    flare   = { label = "[FLARE]",   color = COL_FLARE },
+    landed  = { label = "[LANDED]",  color = COL_HOLD },
+    terrain = { label = "[TERRAIN]", color = COL_TERRAIN },
 }
 
 local ATT_MODE = {
-    level = { label = "[ LEVEL ]  ", color = COL_HOLD },
-    off   = { label = "[ OFF ]    ", color = COL_MANUAL },
-    none  = { label = "[ NONE ]   ", color = COL_LABEL },
+    level = { label = "[LEVEL]", color = COL_HOLD },
+    off   = { label = "[OFF]",   color = COL_MANUAL },
+    none  = { label = "[NONE]",  color = COL_LABEL },
 }
 
-local BORDER_TOP = "\xc9" .. string.rep("\xcd", W - 2) .. "\xbb"
-local BORDER_MID = "\xcc" .. string.rep("\xcd", W - 2) .. "\xb9"
-local BORDER_BTM = "\xc8" .. string.rep("\xcd", W - 2) .. "\xbc"
-local BORDER_ROW = "\xba" .. string.rep(" ",    W - 2) .. "\xba"
+-- Four FCU windows. Splits are the inner verticals; each WIN is the
+-- content range between them (or the outer border). The mode section
+-- under the windows is two panes: LNAV under SPD+BRG, VNAV under ALT+V/S.
+local SPLITS = {13, 25, 38}
+local MODE_SPLIT = 25
+local WIN = {
+    {x = 2,  w = 11}, -- SPD
+    {x = 14, w = 11}, -- BRG
+    {x = 26, w = 12}, -- ALT
+    {x = 39, w = 12}, -- V/S
+}
+local LNAV_WIN = {x = 2,  w = 23} -- under SPD + BRG
+local VNAV_WIN = {x = 26, w = 25} -- under ALT + V/S
+
+local function makeLine(left, fill, right, junctions)
+    local chars = {}
+    for i = 1, W do
+        chars[i] = fill
+    end
+    chars[1] = left
+    chars[W] = right
+    if junctions ~= nil then
+        for x, ch in pairs(junctions) do
+            chars[x] = ch
+        end
+    end
+    return table.concat(chars)
+end
+
+local BORDER_TOP = makeLine("\xc9", "\xcd", "\xbb", {
+    [13] = "\xcb", [25] = "\xcb", [38] = "\xcb",
+})
+-- 4-column FCU closes; the BRG|ALT split continues as LNAV|VNAV.
+local BORDER_FCU_MODES = makeLine("\xcc", "\xcd", "\xb9", {
+    [13] = "\xca", [25] = "\xce", [38] = "\xca",
+})
+local BORDER_MODES_DETAIL = makeLine("\xcc", "\xcd", "\xb9", {
+    [25] = "\xce",
+})
+local BORDER_DETAIL_ATT = makeLine("\xcc", "\xcd", "\xb9", {
+    [25] = "\xca",
+})
+local BORDER_BTM = makeLine("\xc8", "\xcd", "\xbc")
+local BORDER_ROW = makeLine("\xba", " ",    "\xba")
 
 local function drawBorderLine(term, y, line)
     term.setCursorPos(1, y)
@@ -47,6 +87,16 @@ local function drawRow(term, y)
     drawBorderLine(term, y, BORDER_ROW)
 end
 
+local function drawSplitRow(term, y, splits)
+    drawRow(term, y)
+    term.setTextColor(COL_BORDER)
+    term.setBackgroundColor(COL_BG)
+    for i = 1, #splits do
+        term.setCursorPos(splits[i], y)
+        term.write("\xba")
+    end
+end
+
 local function writeAt(term, x, y, text, textColor, bgColor)
     term.setCursorPos(x, y)
     term.setTextColor(textColor or COL_VALUE)
@@ -56,6 +106,34 @@ end
 
 local function writeLabel(term, x, y, label)
     writeAt(term, x, y, label, COL_LABEL)
+end
+
+-- Left- or right-aligned text clipped to a window.
+local function writeWin(term, win, y, text, color, align)
+    text = text or ""
+    if #text > win.w then
+        text = string.sub(text, 1, win.w)
+    end
+    local x = win.x
+    if align == "right" then
+        x = win.x + win.w - #text
+    end
+    writeAt(term, x, y, text, color)
+end
+
+local PAIR_WIDTH = 5
+
+local function fmtPairNum(fmt, value)
+    if value == nil then
+        return string.format("%-" .. PAIR_WIDTH .. "s", "--")
+    end
+    return string.format(fmt, value)
+end
+
+local function writePair(term, x, y, currentStr, targetStr, currentColor, targetColor)
+    writeAt(term, x, y, currentStr, currentColor or COL_VALUE)
+    writeAt(term, x + #currentStr, y, " / ", COL_LABEL)
+    writeAt(term, x + #currentStr + 3, y, targetStr, targetColor or COL_HOLD)
 end
 
 function FlightDisplay:new()
@@ -76,10 +154,7 @@ function FlightDisplay:update(state)
     --   heading: number|nil (0-360, 0 = north)
     --   steerSource: "NAV"|"WHEEL"
     --   relativeBearing: number (deg, selected heading command)
-    --   requestedSpeed: number (normalized speed request 0-1)
-    --   requestedSteer: number (normalized steering request -1-1)
-    --   requestedCommonRpm: number (forward RPM before mixer reduction)
-    --   appliedCommonRpm: number (forward RPM after mixer reduction)
+    --   yawRate: number|nil (gimbal wy, deg/s; nil if the reading is unusable)
     --   speedReduced: boolean (mixer shed forward thrust for steering)
     --   propeller1Rpm: number (applied left RPM)
     --   propeller2Rpm: number (applied right RPM)
@@ -92,160 +167,137 @@ function FlightDisplay:update(state)
     --   agl: number|nil (worst-case optical AGL, m; nil when no sensor hasHit)
     --   verticalPropRpm: number (last RPM sent to the vertical prop RSC)
     --   burnerAmount: number (last commanded burner amount, 5-500)
-    --   altitudeFault: boolean (true when the altitude sensor reading looked invalid)
+    --   altitudeFault: boolean
     --   pitch: number|nil (gimbal pitch, deg)
-    --   pitchRate: number|nil (gimbal pitch rate, deg/s)
     --   stabAngle: number|nil (stabilizer bearing angle, deg)
     --   stabTarget: number (commanded stabilizer angle, deg)
-    --   stabRpm: number (last RSC speed)
-    --   attMode: "level"|"off"|"none" (none = gimbal, RSC, or bearing missing)
+    --   attMode: "level"|"off"|"none"
     --   attFault: boolean
     -- }
 
     local t = self.term
     t.setBackgroundColor(COL_BG)
 
-    -- Row 1: top border
+    local spdWin, brgWin, altWin, vsWin = WIN[1], WIN[2], WIN[3], WIN[4]
+    local src = state.steerSource or "WHEEL"
+
+    -- Row 1: FCU top
     drawBorderLine(t, 1, BORDER_TOP)
 
-    -- Row 2: header
-    drawRow(t, 2)
-    local title = "FLIGHT COMPUTER"
-    writeAt(t, math.floor((W - #title) / 2) + 1, 2, title, COL_HEADER)
+    -- Row 2: window labels
+    drawSplitRow(t, 2, SPLITS)
+    writeWin(t, spdWin, 2, " SPD", COL_LABEL, "left")
+    writeWin(t, brgWin, 2, " BRG", COL_LABEL, "left")
+    writeWin(t, altWin, 2, " ALT", COL_LABEL, "left")
+    writeWin(t, vsWin,  2, " V/S", COL_LABEL, "left")
 
-    -- Row 3: divider
-    drawBorderLine(t, 3, BORDER_MID)
-
-    -- Row 4: LNAV mode + heading + steering source
-    drawRow(t, 4)
-    writeLabel(t, 3, 4, "LNAV")
-    local lnav = LNAV_MODE[state.lnavMode] or LNAV_MODE.hold
-    writeAt(t, 12, 4, lnav.label, lnav.color)
-    writeLabel(t, 24, 4, "HDG")
-    if state.heading ~= nil then
-        writeAt(t, 28, 4, string.format("%3.0f", state.heading))
-    else
-        writeAt(t, 28, 4, " --")
-    end
-    writeLabel(t, 34, 4, "SRC")
-    local src = state.steerSource or "WHEEL"
-    local srcColor = src == "NAV" and COL_HOLD or COL_MANUAL
-    writeAt(t, 38, 4, string.format("%-5s", src), srcColor)
-
-    -- Row 5: actual velocity + speed target + throttle detent
-    drawRow(t, 5)
-    writeLabel(t, 3, 5, "VEL")
-    writeAt(t, 7, 5, string.format("%-8s", string.format("%.2f", state.velocity or 0)))
-    writeLabel(t, 16, 5, "TGT")
+    -- Row 3: selected / target
+    drawSplitRow(t, 3, SPLITS)
     if state.lnavMode == "stop" then
-        writeAt(t, 20, 5, string.format("%-8s", "--"), COL_MANUAL)
+        writeWin(t, spdWin, 3, "--.--", COL_SELECTED, "right")
     else
-        writeAt(t, 20, 5, string.format("%-8s", string.format("%.2f", state.targetVelocity or 0)), COL_HOLD)
+        writeWin(t, spdWin, 3, string.format("%5.2f", state.targetVelocity or 0), COL_SELECTED, "right")
     end
-    writeLabel(t, 29, 5, "THR")
-    writeAt(t, 33, 5, string.format("%d", state.throttle or 0))
-
-    -- Row 6: requested speed / steering / common-mode RPM
-    drawRow(t, 6)
-    writeLabel(t, 3, 6, "REQ")
-    writeLabel(t, 7, 6, "SPD")
-    writeAt(t, 11, 6, string.format("%4.2f", state.requestedSpeed or 0))
-    writeLabel(t, 17, 6, "STR")
-    writeAt(t, 21, 6, string.format("%+5.2f", state.requestedSteer or 0))
-    writeLabel(t, 28, 6, "COM")
-    writeAt(t, 32, 6, string.format("%d", math.floor((state.requestedCommonRpm or 0) + 0.5)))
-
-    -- Row 7: applied left/right RPM and common-mode after mixer
-    drawRow(t, 7)
-    writeLabel(t, 3, 7, "APP")
-    writeLabel(t, 7, 7, "L")
-    writeAt(t, 9, 7, string.format("%4d", state.propeller1Rpm or 0))
-    writeLabel(t, 15, 7, "R")
-    writeAt(t, 17, 7, string.format("%4d", state.propeller2Rpm or 0))
-    writeLabel(t, 23, 7, "COM")
-    local comColor = state.speedReduced and COL_MANUAL or COL_VALUE
-    writeAt(t, 27, 7, string.format("%d", math.floor((state.appliedCommonRpm or 0) + 0.5)), comColor)
-    if state.speedReduced then
-        writeAt(t, 32, 7, "CUT", COL_MANUAL)
+    if src == "NAV" then
+        writeWin(t, brgWin, 3, string.format("%+5.0f", 0), COL_SELECTED, "right")
+    else
+        writeWin(t, brgWin, 3, "  ---", COL_SELECTED, "right")
     end
-
-    -- Row 8: VNAV divider
-    drawBorderLine(t, 8, BORDER_MID)
-
-    -- Row 9: VNAV mode + altitude target
-    drawRow(t, 9)
-    writeLabel(t, 3, 9, "VNAV")
-    local vnav = VNAV_MODE[state.vnavMode] or VNAV_MODE.hold
-    writeAt(t, 12, 9, vnav.label, vnav.color)
-    writeLabel(t, 26, 9, "TARGET")
     if state.landing then
-        writeAt(t, 34, 9, string.format("%-10s", "--"), COL_MANUAL)
+        writeWin(t, altWin, 3, "---.-", COL_SELECTED, "right")
     else
-        writeAt(t, 34, 9, string.format("%-10s", string.format("%.1f m", state.targetAltitude or 0)), COL_HOLD)
+        writeWin(t, altWin, 3, string.format("%5.1f", state.targetAltitude or 0), COL_SELECTED, "right")
     end
+    writeWin(t, vsWin, 3, string.format("%+5.2f", state.desiredVS or 0), COL_SELECTED, "right")
 
-    -- Row 10: current altitude / vertical speed
-    drawRow(t, 10)
+    -- Row 4: actual
+    drawSplitRow(t, 4, SPLITS)
+    writeWin(t, spdWin, 4, string.format("%5.2f", state.velocity or 0), COL_VALUE, "right")
+    writeWin(t, brgWin, 4, string.format("%+5.0f", state.relativeBearing or 0), COL_VALUE, "right")
     local altColor = state.altitudeFault and colors.red or COL_VALUE
-    writeLabel(t, 3, 10, "ALT     ")
-    writeAt(t, 14, 10, string.format("%-10s", string.format("%.1f m", state.altitude or 0)), altColor)
-    writeLabel(t, 26, 10, "VSPD  ")
-    writeAt(t, 34, 10, string.format("%-10s", string.format("%.2f m/s", state.verticalSpeed or 0)))
+    writeWin(t, altWin, 4, string.format("%5.1f", state.altitude or 0), altColor, "right")
+    writeWin(t, vsWin, 4, string.format("%+5.2f", state.verticalSpeed or 0), COL_VALUE, "right")
 
-    -- Row 11: burner / AGL / desired VS / vertical prop RPM
-    drawRow(t, 11)
-    writeLabel(t, 3, 11, "BURN")
-    writeAt(t, 8, 11, string.format("%-5s", string.format("%.0f", state.burnerAmount or 0)))
-    writeLabel(t, 14, 11, "AGL")
-    if state.agl ~= nil then
-        writeAt(t, 18, 11, string.format("%-7s", string.format("%.1f m", state.agl)))
+    -- Row 5: close the four windows; LNAV|VNAV split continues
+    drawBorderLine(t, 5, BORDER_FCU_MODES)
+
+    -- Row 6: modes — LNAV under SPD+BRG, VNAV under ALT+V/S
+    drawSplitRow(t, 6, {MODE_SPLIT})
+    local lnav = LNAV_MODE[state.lnavMode] or LNAV_MODE.hold
+    writeLabel(t, LNAV_WIN.x + 1, 6, "LNAV")
+    writeAt(t, LNAV_WIN.x + 6, 6, lnav.label, lnav.color)
+    local srcColor = src == "NAV" and COL_HOLD or COL_MANUAL
+    writeWin(t, LNAV_WIN, 6, src, srcColor, "right")
+    local vnav = VNAV_MODE[state.vnavMode] or VNAV_MODE.hold
+    writeLabel(t, VNAV_WIN.x + 1, 6, "VNAV")
+    writeAt(t, VNAV_WIN.x + 6, 6, vnav.label, vnav.color)
+
+    -- Row 7: modes to LNAV/VNAV detail panes
+    drawBorderLine(t, 7, BORDER_MODES_DETAIL)
+
+    -- Row 8: HDG/YAW under LNAV, AGL/burner under VNAV
+    drawSplitRow(t, 8, {MODE_SPLIT})
+    local lnavLblL, lnavValL = LNAV_WIN.x + 1, LNAV_WIN.x + 5
+    local lnavLblR, lnavValR = LNAV_WIN.x + 11, LNAV_WIN.x + 15
+    writeLabel(t, lnavLblL, 8, "HDG")
+    if state.heading ~= nil then
+        writeAt(t, lnavValL, 8, string.format("%5s", string.format("%03.0f", state.heading)))
     else
-        writeAt(t, 18, 11, string.format("%-7s", "--"))
+        writeAt(t, lnavValL, 8, "  --")
     end
-    writeLabel(t, 26, 11, "DVS")
-    writeAt(t, 30, 11, string.format("%-7s", string.format("%.2f", state.desiredVS or 0)))
-    writeLabel(t, 38, 11, "VP")
-    writeAt(t, 41, 11, string.format("%-6s", string.format("%d", state.verticalPropRpm or 0)))
+    writeLabel(t, lnavLblR, 8, "YAW")
+    if state.yawRate ~= nil then
+        writeAt(t, lnavValR, 8, string.format("%+5.1f", state.yawRate))
+    else
+        writeAt(t, lnavValR, 8, "  --")
+    end
+    writeLabel(t, VNAV_WIN.x + 1, 8, "AGL")
+    if state.agl ~= nil then
+        writeAt(t, VNAV_WIN.x + 5, 8, string.format("%5.1f m", state.agl))
+    else
+        writeAt(t, VNAV_WIN.x + 5, 8, "   --")
+    end
+    writeLabel(t, VNAV_WIN.x + 14, 8, "BURN")
+    writeAt(t, VNAV_WIN.x + 19, 8, string.format("%4.0f", state.burnerAmount or 0))
 
-    -- Row 12: ATT divider
-    drawBorderLine(t, 12, BORDER_MID)
+    -- Row 9: left/right props under LNAV, vertical prop under VNAV
+    drawSplitRow(t, 9, {MODE_SPLIT})
+    writeLabel(t, lnavLblL, 9, "L")
+    writeAt(t, lnavValL, 9, string.format("%5d", math.floor((state.propeller1Rpm or 0) + 0.5)))
+    writeLabel(t, lnavLblR, 9, "R")
+    writeAt(t, lnavValR, 9, string.format("%5d", math.floor((state.propeller2Rpm or 0) + 0.5)))
+    if state.speedReduced then
+        writeWin(t, LNAV_WIN, 9, "CUT", COL_MANUAL, "right")
+    end
+    writeLabel(t, VNAV_WIN.x + 1, 9, "VP")
+    writeAt(t, VNAV_WIN.x + 5, 9, string.format("%5d", math.floor((state.verticalPropRpm or 0) + 0.5)))
 
-    -- Row 13: ATT mode + pitch
-    drawRow(t, 13)
-    writeLabel(t, 3, 13, "ATT")
+    -- Row 10: close the detail panes
+    drawBorderLine(t, 10, BORDER_DETAIL_ATT)
+
+    -- Row 11: ATT mode + pitch + stabilizer current/target
+    drawRow(t, 11)
     local att = ATT_MODE[state.attMode] or ATT_MODE.off
-    writeAt(t, 12, 13, att.label, att.color)
-    writeLabel(t, 26, 13, "PITCH")
+    writeLabel(t, 3, 11, "ATT")
+    writeAt(t, 7, 11, att.label, att.color)
+    writeLabel(t, 16, 11, "PITCH")
     local pitchColor = state.attFault and colors.red or COL_VALUE
     if state.pitch ~= nil then
-        writeAt(t, 34, 13, string.format("%-10s", string.format("%.1f deg", state.pitch)), pitchColor)
+        writeAt(t, 22, 11, string.format("%+5.1f", state.pitch), pitchColor)
     else
-        writeAt(t, 34, 13, string.format("%-10s", "--"), pitchColor)
+        writeAt(t, 22, 11, "  --", pitchColor)
     end
-
-    -- Row 14: stabilizer angle / command / RPM
-    drawRow(t, 14)
-    writeLabel(t, 3, 14, "STAB")
+    writeLabel(t, 29, 11, "STAB")
     if state.attMode == "none" then
-        writeAt(t, 8, 14, string.format("%-7s", "--"))
-        writeLabel(t, 16, 14, "CMD")
-        writeAt(t, 20, 14, string.format("%-7s", "--"))
-        writeLabel(t, 28, 14, "RPM")
-        writeAt(t, 32, 14, string.format("%-6s", "--"))
+        writePair(t, 34, 11, fmtPairNum("%5.1f", nil), fmtPairNum("%5.1f", nil), COL_MANUAL, COL_MANUAL)
     else
-        if state.stabAngle ~= nil then
-            writeAt(t, 8, 14, string.format("%-7s", string.format("%.1f", state.stabAngle)))
-        else
-            writeAt(t, 8, 14, string.format("%-7s", "--"))
-        end
-        writeLabel(t, 16, 14, "CMD")
-        writeAt(t, 20, 14, string.format("%-7s", string.format("%.1f", state.stabTarget or 0)))
-        writeLabel(t, 28, 14, "RPM")
-        writeAt(t, 32, 14, string.format("%-6s", string.format("%d", state.stabRpm or 0)))
+        writePair(t, 34, 11,
+            fmtPairNum("%5.1f", state.stabAngle),
+            fmtPairNum("%5.1f", state.stabTarget or 0))
     end
 
-    drawBorderLine(t, 15, BORDER_BTM)
-    for y = 16, H do
+    drawBorderLine(t, 12, BORDER_BTM)
+    for y = 13, H do
         drawRow(t, y)
     end
 end
