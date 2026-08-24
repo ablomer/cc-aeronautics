@@ -90,7 +90,7 @@ function FlightDisplay:update(state)
     --   verticalSpeed: number (m/s)
     --   desiredVS: number (commanded vertical speed, m/s)
     --   agl: number|nil (worst-case optical AGL, m; nil when no sensor hasHit)
-    --   verticalPropPower: number (last power sent to the vertical prop bank)
+    --   verticalPropRpm: number (last RPM sent to the vertical prop RSC)
     --   burnerAmount: number (last commanded burner amount, 5-500)
     --   altitudeFault: boolean (true when the altitude sensor reading looked invalid)
     --   pitch: number|nil (gimbal pitch, deg)
@@ -192,7 +192,7 @@ function FlightDisplay:update(state)
     writeLabel(t, 26, 10, "VSPD  ")
     writeAt(t, 34, 10, string.format("%-10s", string.format("%.2f m/s", state.verticalSpeed or 0)))
 
-    -- Row 11: burner / AGL / desired VS / vertical prop power
+    -- Row 11: burner / AGL / desired VS / vertical prop RPM
     drawRow(t, 11)
     writeLabel(t, 3, 11, "BURN")
     writeAt(t, 8, 11, string.format("%-5s", string.format("%.0f", state.burnerAmount or 0)))
@@ -205,7 +205,7 @@ function FlightDisplay:update(state)
     writeLabel(t, 26, 11, "DVS")
     writeAt(t, 30, 11, string.format("%-7s", string.format("%.2f", state.desiredVS or 0)))
     writeLabel(t, 38, 11, "VP")
-    writeAt(t, 41, 11, string.format("%-6s", string.format("%.1f", state.verticalPropPower or 0)))
+    writeAt(t, 41, 11, string.format("%-6s", string.format("%d", state.verticalPropRpm or 0)))
 
     -- Row 12: ATT divider
     drawBorderLine(t, 12, BORDER_MID)

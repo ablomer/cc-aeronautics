@@ -65,6 +65,15 @@ SHIP = {
         -- Flare keeps a residual sink through this height, then latches
         -- landed and cuts heat. Measure at rest, not in the hover.
         touchdownAgl = 2.0,
+
+        -- Actuator ceiling sent to the vertical propeller RSC. Create
+        -- clamps setTargetSpeed to [-256, 256]; leftover climb boost
+        -- saturates at this cap. Lower it if a gearbox needs a software
+        -- limit; raise toward 256 if the boost is weak.
+        maxRpm = 256,
+
+        -- Flip if positive RPM pushes the hull down.
+        invert = false,
     },
     ATT = {
         -- Stabilizer travel clamp (degrees). Positive is an up angle.
@@ -116,10 +125,11 @@ PERIPHERALS = {
         -- (fixed sink, then optical flare).
         burnerLever = "throttle_lever_1",
 
-        -- type: analog_transmission
-        -- Drives all vertical propellers together (single shared transmission).
+        -- type: Create rotational speed controller
+        -- Drives all vertical propellers together (single shared RSC).
         -- Leftover +up boost when VerticalSpeedHold is short of desiredVS.
-        verticalPropellerTransmission = "analog_transmission_0",
+        -- setTargetSpeed is integer RPM in [-256, 256].
+        verticalPropellerSpeedController = "Create_RotationSpeedController_2",
     },
 
     -- ------------------------

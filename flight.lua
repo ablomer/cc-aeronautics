@@ -1,10 +1,9 @@
 require("util")
 require("config")
 
--- Propeller drives a Create rotational speed controller. Unlike the old
--- analog transmissions (brakes: higher signal = slower), setTargetSpeed
--- commands RPM directly. Range is integer [-256, 256]; the peripheral
--- clamps anything outside that.
+-- Propeller drives a Create rotational speed controller.
+-- setTargetSpeed commands RPM directly. Range is integer [-256, 256];
+-- the peripheral clamps anything outside that.
 -- https://wiki.createmod.net/users/cc-tweaked-integration/rotational-speed-controller#setTargetSpeed
 Propeller = {}
 Propeller.MAX_RPM = 256
@@ -116,22 +115,6 @@ function DifferentialThrustMixer:apply(speedReq, steerReq)
     result.rightRpm = self.right.lastSpeed
     self.last = result
     return result
-end
-
--- Analog transmissions still used as brakes on the vertical prop bank.
--- Higher setSignal slows the shaft; setPower inverts so 15 is full speed.
-AnalogPropeller = {}
-
-function AnalogPropeller:new(transmission)
-    local t = setmetatable({}, { __index = AnalogPropeller })
-    t.transmission = peripheral.wrap(transmission)
-    t.lastPower = 0
-    return t
-end
-
-function AnalogPropeller:setPower(power)
-    self.transmission.setSignal(15 - power)
-    self.lastPower = power
 end
 
 -- BurnerBank fans one commanded amount out to every hot air burner in the

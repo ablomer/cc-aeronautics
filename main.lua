@@ -30,8 +30,11 @@ local burnerLever = peripheral.wrap(PERIPHERALS.VNAV.burnerLever)
 local altitudeSensor = findPeripheral("altitude_sensor")
 local burners = findPeripherals("hot_air_burner")
 
--- Vertical propellers all controlled by the same analog transmission
-local verticalPropellers = AnalogPropeller:new(PERIPHERALS.VNAV.verticalPropellerTransmission)
+-- Vertical propellers all controlled by the same rotational speed controller
+local verticalPropellers = Propeller:new(PERIPHERALS.VNAV.verticalPropellerSpeedController, {
+    maxRpm = SHIP.VNAV.maxRpm,
+    invert = SHIP.VNAV.invert,
+})
 local opticalSensors = findPeripherals("optical_sensor")
 
 local MAX_POWER = 15  -- throttle / burner lever notches (still 0-15)
@@ -127,20 +130,20 @@ local function controlUpdate()
         desiredVS = 0
         vnavMode = "landed"
         burnerBank:setAmount(verticalSpeedHold:holdOff())
-        verticalPropellers:setPower(0)
+        verticalPropellers:setSpeed(0)
     elseif landing then
         desiredVS = landingDesiredVS(agl, hasGround)
         vnavMode = hasGround and "flare" or "land"
         burnerBank:setAmount(verticalSpeedHold:read(desiredVS))
-        local propPower = 0
+        local propRpm = 0
         if not verticalSpeedHold.fault then
-            propPower = verticalPropPower(
+            propRpm = verticalPropRpm(
                 verticalSpeedHold.lastRateError,
                 verticalSpeedHold.slewLimited,
                 hasGround
             )
         end
-        verticalPropellers:setPower(propPower)
+        verticalPropellers:setSpeed(propRpm)
     else
         local height = altitudeSensor.getHeight()
         local altRate = altitudeHold:desiredRate(height)
@@ -154,15 +157,15 @@ local function controlUpdate()
         end
         vnavMode = (terrainVS > 0 and terrainVS > altRate) and "terrain" or "hold"
         burnerBank:setAmount(verticalSpeedHold:read(desiredVS))
-        local propPower = 0
+        local propRpm = 0
         if not verticalSpeedHold.fault then
-            propPower = verticalPropPower(
+            propRpm = verticalPropRpm(
                 verticalSpeedHold.lastRateError,
                 verticalSpeedHold.slewLimited,
                 hasGround
             )
         end
-        verticalPropellers:setPower(propPower)
+        verticalPropellers:setSpeed(propRpm)
     end
 
     local lnavMode
@@ -214,7 +217,7 @@ local function controlUpdate()
         verticalSpeed  = verticalSpeedHold.lastVerticalSpeed,
         desiredVS      = desiredVS,
         agl            = hasGround and agl or nil,
-        verticalPropPower = verticalPropellers.lastPower,
+        verticalPropRpm   = verticalPropellers.lastSpeed,
         burnerAmount   = burnerBank.lastAmount,
         altitudeFault  = verticalSpeedHold.fault,
         pitch          = pitchHold.lastPitch,

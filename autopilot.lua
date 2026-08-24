@@ -375,8 +375,7 @@ VNav.LANDING_SETTLE_SINK    = -0.2  -- m/s held until latch; 0 at settle would h
 VNav.TOUCHDOWN_MARGIN       = 0.3   -- metres; latch a little above the rest reading
 VNav.OPTICAL_RANGE          = 15.0  -- metres; flare starts from first contact / this range
 VNav.PROP_DEADBAND  = 0.2   -- m/s; ignore tiny rate errors so props stay off at hover
-VNav.PROP_GAIN      = 5.0   -- prop power per m/s of positive rate error (3 m/s -> 15)
-VNav.PROP_MAX_POWER = 15
+VNav.PROP_GAIN      = 256 / 3  -- RPM per m/s of leftover climb (3 m/s -> hardware max)
 
 -- Worst-case AGL: minimum getDistance() among sensors that hasHit().
 -- A miss means "beyond range", never 0. Returns agl, hasGround.
@@ -440,16 +439,16 @@ function terrainClimbVS(agl, hasGround)
     return Range:new(0, AltitudeHold.MAX_CLIMB_RATE):clamp(climb)
 end
 
--- No-integral leftover boost. Positive rateError only; negative error
--- (need more sink) never spins the vertical props.
-function verticalPropPower(rateError, slewLimited, hasGround)
+-- No-integral leftover boost as RSC RPM. Positive rateError only;
+-- negative error (need more sink) never spins the vertical props.
+function verticalPropRpm(rateError, slewLimited, hasGround)
     if rateError == nil or rateError <= VNav.PROP_DEADBAND then
         return 0
     end
     if not (slewLimited or hasGround) then
         return 0
     end
-    return Range:new(0, VNav.PROP_MAX_POWER):clamp(rateError * VNav.PROP_GAIN)
+    return Range:new(0, SHIP.VNAV.maxRpm):clamp(rateError * VNav.PROP_GAIN)
 end
 
 -- PitchHold is the attitude outer loop: gimbal pitch error -> desired
