@@ -59,29 +59,3 @@ BURNER_AMOUNT_RANGE = Range:new(5, 500)
 function isFiniteNumber(v)
     return type(v) == "number" and v == v
 end
-
--- Wrap degrees to (-180, 180].
-function wrap180(deg)
-    return ((deg + 180) % 360) - 180
-end
-
--- Normalize degrees to [0, 360). Lua's % floors toward -inf, so -10 -> 350
--- and 400 -> 40 fall out for free (math.fmod keeps the sign and would not).
-function norm360(deg)
-    return deg % 360
-end
-
--- Signed shortest rotation from current to target. Positive = turn right.
-function headingError(target, current)
-    return wrap180(target - current)
-end
-
--- Create Avionics getHeading() is atan2(x, z): 0 = world +Z (south),
--- increasing counterclockwise. Minecraft player yaw increases clockwise.
--- Negate so a right turn raises the number, then +180 so 0 = north
--- (world -Z), matching a modern aircraft compass. getBearing() is already
--- a signed relative angle in [-180, 180] and must not go through this.
-function compassHeading(heading)
-    if heading == nil then return nil end
-    return norm360(-heading + 180)
-end

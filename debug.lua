@@ -3,7 +3,6 @@
 -- program is running and return to the shell.
 
 require("config")
-require("util")
 require("flight")
 
 -- Format getter returns so tables print as {1.2, 3.4} instead of table: 0x...
@@ -90,10 +89,6 @@ local function runPeripheralDebug(peripheralName, label)
                     shown = formatValue(a)
                 end
                 print(string.format("%-20s %s", name, shown))
-                if name == "getHeading" and isFiniteNumber(a) then
-                    print(string.format("%-20s %s", "compassHeading",
-                        string.format("%.1f (0=N)", compassHeading(a))))
-                end
             else
                 print(string.format("%-20s <error: %s>", name, tostring(a)))
             end

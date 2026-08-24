@@ -1,94 +1,6 @@
 require("util")
 require("config")
 
--- HeadingHold tracks a 0-359 heading setpoint and produces a PID steering
--- output in [-1, 1]. Same cascade shape as VNAV: an outer source (NAV
--- bearing or the wheel as a turn-rate command) writes the setpoint; this
--- inner loop closes on it. Proportional is linear across the full wrap:
--- -180° → -1, +180° → +1. The D term brakes a fast close so the hull
--- does not carry yaw through 0.
-HeadingHold = {}
-
-HeadingHold.GAIN       = 1 / 180   -- proportional; maps ±180° error to ±1.0 (19° → ~0.11)
-HeadingHold.D_GAIN     = 0.009     -- output per degree/second of closing rate (damping);
-                                   -- raise if it still overshoots, lower if it crawls in
-HeadingHold.D_SMOOTH   = 0.4       -- rate low-pass weight; used only on the
-                                   -- differentiated-heading fallback (gimbal path is clean)
-HeadingHold.I_GAIN     = 0.03      -- output per degree-second; max I is
-                                   -- I_LIMIT * I_GAIN (0.24) — enough to use
-                                   -- maxHoldFarDiff without eating the near cap
-HeadingHold.I_LIMIT    = 8.0       -- degree-seconds
-HeadingHold.I_BAND     = 40.0      -- degrees; hold-trim only. I is frozen while the
-                                   -- wheel is commanding a rate so the lead-clamp
-                                   -- error cannot wind a leftover yaw on center
-HeadingHold.FF_GAIN    = 0.30      -- fraction of full STEER at maxTurnRate; the wheel
-                                   -- is a rate command, so it should produce STEER
-                                   -- immediately rather than waiting for heading lag
-HeadingHold.MIN_OUTPUT = 0.05      -- ~13 RPM at maxSteerDiff 256; NAV / rate-command
-                                   -- hang-breaker only — not used while holding
-HeadingHold.STUCK_RATE = 2.0       -- deg/s; below this the hull is not really turning,
-                                   -- so MIN_OUTPUT may kick it off a steady-state hang
-HeadingHold.DEADBAND   = 2.0       -- degrees; P shrinks to 0 here, I holds the trim
-HeadingHold.HOLD_TAPER = 8.0       -- deg; full maxHoldDiff at/above this, then
-                                   -- linear fade toward HOLD_NEAR at the deadband
-HeadingHold.HOLD_NEAR  = 0.15      -- fraction of maxHoldDiff at the deadband edge
-HeadingHold.HOLD_FAR   = 20.0      -- deg; grow from maxHoldDiff to maxHoldFarDiff
-HeadingHold.I_BLEED    = 3.0       -- 1/s; leak I while error is clearly closing
-HeadingHold.I_BLEED_HYST = 1.5     -- deg; ignore smaller |err| drops so heading
-                                   -- noise at speed cannot dump the cruise trim
-HeadingHold.STOP_LEAD  = 0.35      -- seconds of yaw coast credited when the wheel
-                                   -- returns to center; the setpoint snaps to where
-                                   -- the hull will settle instead of staying up to
-                                   -- maxHeadingLead ahead of it
-HeadingHold.STOP_MARGIN = 2.5      -- multiple of the D term the hold cap must allow,
-                                   -- so the taper can never clamp away the authority
-                                   -- needed to arrest a yaw already in progress
-
--- STEER ceiling while the wheel is centered. Tapers with |error| so a
--- 3° residual cannot spend the whole 48 RPM and carry through zero, but
--- never below what the D term needs to stop an existing yaw.
--- Turns (nonzero commanded rate) and NAV (nil rate) keep [-1, 1].
-local function holdSteerLimit(err, rate)
-    local maxDiff = SHIP.LNAV.maxSteerDiff
-    if maxDiff == nil or maxDiff <= 0 then return 1 end
-    local hold = SHIP.LNAV.maxHoldDiff or maxDiff
-    local far = SHIP.LNAV.maxHoldFarDiff or hold
-    if far < hold then far = hold end
-    local full = Range:new(0, 1):clamp(hold / maxDiff)
-    local farLim = Range:new(0, 1):clamp(far / maxDiff)
-    if err == nil then return full end
-
-    local base
-    local ae = math.abs(err)
-    local farErr = HeadingHold.HOLD_FAR
-    if ae <= HeadingHold.DEADBAND then
-        base = full * HeadingHold.HOLD_NEAR
-    elseif ae < HeadingHold.HOLD_TAPER then
-        local span = HeadingHold.HOLD_TAPER - HeadingHold.DEADBAND
-        if span <= 0 then
-            base = full * HeadingHold.HOLD_NEAR
-        else
-            local t = (ae - HeadingHold.DEADBAND) / span
-            local near = full * HeadingHold.HOLD_NEAR
-            base = near + t * (full - near)
-        end
-    elseif ae >= farErr or farErr <= HeadingHold.HOLD_TAPER then
-        -- Persistent offset (cruise veer): grow toward maxHoldFarDiff.
-        base = farLim
-    else
-        local t = (ae - HeadingHold.HOLD_TAPER) / (farErr - HeadingHold.HOLD_TAPER)
-        base = full + t * (farLim - full)
-    end
-
-    -- Yaw already in progress needs braking authority regardless of how
-    -- small the error is. At hover-weave rates (~2 deg/s) this adds
-    -- almost nothing; after a full-lock turn it unlocks the real stop.
-    local damp = math.abs((rate or 0) * HeadingHold.D_GAIN) * HeadingHold.STOP_MARGIN
-    if damp > farLim then damp = farLim end
-    if damp > base then return damp end
-    return base
-end
-
 -- CC peripherals may return a list or multiple values. Accept either.
 local function unpackReading(first, second, third)
     if type(first) == "table" then
@@ -97,240 +9,29 @@ local function unpackReading(first, second, third)
     return first, second, third
 end
 
-function HeadingHold:new(navTable, gimbal)
-    local t = setmetatable({}, { __index = HeadingHold })
-    t.navTable  = navTable
-    t.gimbal    = gimbal
-    t.integral  = ClampedIntegral:new(HeadingHold.I_LIMIT)
-    t.target    = 0
-    t.lastHeading = nil
-    t.lastRate = 0
-    t.lastError = 0
-    t.lastOutput = 0
-    t.lastClock = nil
-    t.fault = false
-    t.rateCommanded = false
-    return t
-end
-
--- Seed the setpoint from the live compass heading and clear integrator /
--- rate history. Used on the first tick, on unpark from landed, and when
--- NAV drops out so the wheel holds whatever heading the hull is on.
-function HeadingHold:captureHeading()
-    local heading = compassHeading(self.navTable.getHeading())
-    if isFiniteNumber(heading) then
-        self.target = heading
-        self.lastHeading = heading
-        self.fault = false
-    else
-        self.fault = true
-    end
-    self.integral:reset()
-    self.lastRate = 0
-    self.lastClock = nil
-    self.rateCommanded = false
-end
-
-function HeadingHold:setTarget(heading)
-    if isFiniteNumber(heading) then
-        self.target = norm360(heading)
-    end
-end
-
--- Advance the setpoint at the commanded turn rate (deg/s). Blocks growth
--- past maxHeadingLead but always permits movement that reduces the error,
--- so a pilot reversing out of a saturated turn is never locked out.
-function HeadingHold:advanceTarget(rate, dt, heading)
-    if rate == 0 then return end
-    local err = headingError(self.target, heading)
-    local proposed = norm360(self.target + rate * dt)
-    local newErr = headingError(proposed, heading)
-    if math.abs(newErr) > SHIP.LNAV.maxHeadingLead
-        and math.abs(newErr) > math.abs(err) then
-        return
-    end
-    self.target = proposed
-end
-
--- d(headingError)/dt for the D term. Gimbal wy is already that sign
--- (right-hand-rule about body-up: a right turn is negative wy, which
--- matches a closing positive heading error). Compass heading rate is
--- -wy, the same negation compassHeading applies; error rate is then -(-wy).
--- Falls back to differentiated heading (smoothed) if the gimbal is down.
--- lastHeading must be assigned by the caller AFTER this returns.
-function HeadingHold:yawRate(heading, dt)
-    if self.gimbal ~= nil then
-        local _, wy = unpackReading(self.gimbal.getAngularRates())
-        if isFiniteNumber(wy) then
-            return wy
-        end
-    end
-    if self.lastHeading ~= nil then
-        local headingRate = wrap180(heading - self.lastHeading) / dt
-        local raw = -headingRate
-        self.lastRate = self.lastRate
-            + HeadingHold.D_SMOOTH * (raw - self.lastRate)
-    end
-    return self.lastRate
-end
-
--- Returns a PID steering value in [-1, 1]. commandedRate is deg/s of
--- setpoint advance (wheel HDG mode), or nil when the target was set
--- externally (NAV). Call once per tick; integral / D / dt are stateful.
-function HeadingHold:read(commandedRate)
-    local heading = compassHeading(self.navTable.getHeading())
-    local dt = stepClock(self, 0.1)
-
-    if not isFiniteNumber(heading) then
-        self.fault = true
-        self.lastOutput = 0
-        return 0
-    end
-    self.fault = false
-
-    if commandedRate ~= nil then
-        self:advanceTarget(commandedRate, dt, heading)
-    end
-
-    local rate = self:yawRate(heading, dt)
-    self.lastRate = rate
-    self.lastHeading = heading
-
-    -- Wheel just came back to center. The setpoint may be up to
-    -- maxHeadingLead ahead of the hull, which reads to the pilot as the
-    -- ship ignoring them and turning on its own. Snap it to where the
-    -- yaw will actually coast to, so centering means "stop here".
-    -- Compass heading rate is -rate, hence the subtraction.
-    local wheelHold = commandedRate == 0
-    if wheelHold and self.rateCommanded then
-        self:setTarget(heading - rate * HeadingHold.STOP_LEAD)
-    end
-    self.rateCommanded = commandedRate ~= nil and commandedRate ~= 0
-
-    local err = headingError(self.target, heading)
-    local prevErr = self.lastError
-    self.lastError = err
-
-    -- Same rule as PitchHold: a leftover heading is a trim problem.
-    -- Zeroing I (or the output) inside the deadband dumps the offset
-    -- that counters a constant yaw bias, and the hull walks right back
-    -- out. Shrink P to 0 across the band so the edge is continuous;
-    -- freeze I inside the band and keep integrating a residual until
-    -- we get there. Reset I only on a huge intercept so a 180° swing
-    -- cannot wind up.
-    --
-    -- I is hold-trim only. While the wheel is commanding a rate the
-    -- heading error is mostly lead-clamp lag, not bias — integrating
-    -- that, then freezing it on center, was a leftover yaw command
-    -- that made the ship hunt.
-    local shrunk = 0
-    if err > HeadingHold.DEADBAND then
-        shrunk = err - HeadingHold.DEADBAND
-    elseif err < -HeadingHold.DEADBAND then
-        shrunk = err + HeadingHold.DEADBAND
-    end
-
-    -- I learns bias only with the wheel centered. NAV (nil) still
-    -- integrates on the last I_BAND of an intercept; a rate command
-    -- freezes the last hold trim.
-    local mayIntegrate = commandedRate == nil or wheelHold
-    if math.abs(err) > HeadingHold.I_BAND then
-        self.integral:reset()
-    elseif mayIntegrate and math.abs(err) > HeadingHold.DEADBAND then
-        -- Accumulate while the error is growing or holding. Bleed
-        -- only on a clear close (past I_BLEED_HYST) so a 1° heading
-        -- wobble at speed cannot dump the cruise trim.
-        local closing = math.abs(err) < math.abs(prevErr) - HeadingHold.I_BLEED_HYST
-        if closing then
-            local keep = math.exp(-HeadingHold.I_BLEED * dt)
-            self.integral:set(self.integral.value * keep)
-        else
-            self.integral:add(err * dt)
-        end
-    end
-
-    local value = (shrunk * HeadingHold.GAIN)
-        + (self.integral.value * HeadingHold.I_GAIN)
-        + (rate * HeadingHold.D_GAIN)
-    if commandedRate ~= nil and SHIP.LNAV.maxTurnRate > 0 then
-        value = value + (commandedRate / SHIP.LNAV.maxTurnRate) * HeadingHold.FF_GAIN
-    end
-    if wheelHold then
-        local lim = holdSteerLimit(err, rate)
-        value = Range:new(-lim, lim):clamp(value)
-    else
-        value = Range:new(-1, 1):clamp(value)
-    end
-
-    -- MIN_OUTPUT is a hang-breaker for NAV / rate commands. On hold it
-    -- is the punch that carried a 3° residual through zero by ~5°.
-    if not wheelHold
-        and math.abs(err) > HeadingHold.DEADBAND
-        and math.abs(rate) < HeadingHold.STUCK_RATE then
-        local floor = HeadingHold.MIN_OUTPUT
-        if value > 0 and value < floor then
-            value = floor
-        elseif value < 0 and value > -floor then
-            value = -floor
-        end
-    end
-    self.lastOutput = value
-    return value
-end
-
--- Park the loop: zero steer, reset the integral, and recapture the target
--- from the live heading so a later unpark is bumpless.
-function HeadingHold:holdOff()
-    self.integral:reset()
-    self.lastRate = 0
-    self.lastError = 0
-    self.lastOutput = 0
-    self.lastClock = nil
-    self.rateCommanded = false
-    local heading = compassHeading(self.navTable.getHeading())
-    if isFiniteNumber(heading) then
-        self.target = heading
-        self.lastHeading = heading
-        self.fault = false
-    else
-        self.fault = true
-    end
-    return 0
-end
-
 -- VelocityHold maintains a target velocity and computes a PI control
--- output in propeller RPM (the surge input to allocatePropMix).
+-- output as a normalized speed request in [0, 1]. The differential
+-- mixer (flight.lua) scales that request by SHIP.LNAV.forwardRpm.
 VelocityHold = {}
 
--- Analog loop was 15 power per 1 m/s of error (full scale). Same fraction
--- of available RSC RPM: 1 m/s commands SHIP.LNAV.maxRpm.
-VelocityHold.GAIN    = SHIP.LNAV.maxRpm
-VelocityHold.I_GAIN  = 2.0 * (SHIP.LNAV.maxRpm / 15)  -- same I/P ratio as analog
-VelocityHold.I_LIMIT = 15.0  -- accumulated velocity-error ticks; not RPM
+-- Analog loop was 15 power per 1 m/s of error (full scale). Same
+-- fraction of the normalized range: 1 m/s commands 1.0.
+VelocityHold.GAIN    = 1.0
+VelocityHold.I_GAIN  = 2.0 / 15.0  -- same I/P ratio as the analog / RPM loops
+VelocityHold.I_LIMIT = 15.0        -- accumulated velocity-error ticks; not RPM
 
 function VelocityHold:new(velocitySensor, minOutput, maxOutput)
     local t = setmetatable({}, { __index = VelocityHold })
     t.sensor   = velocitySensor
     t.target   = 0
     t.integral = ClampedIntegral:new(VelocityHold.I_LIMIT)
-    t.maxOutput = maxOutput or SHIP.LNAV.maxRpm
-    t.output   = Range:new(minOutput or 0, t.maxOutput)
+    t.output   = Range:new(minOutput or 0, maxOutput or 1)
     return t
 end
 
--- Lower this tick's output ceiling to the RPM the mixer can actually
--- deliver after the yaw differential takes its share. Anti-windup keys
--- off output.max, so without this the loop keeps integrating against a
--- limit the props never reach during a sustained turn and then slams
--- surge the moment the turn ends. Call every tick: it restores itself
--- to maxOutput as the differential shrinks.
-function VelocityHold:setCeiling(rpm)
-    self.output.max = Range:new(self.output.min, self.maxOutput):clamp(rpm)
-end
-
 -- Set an explicit target velocity. Deliberately does NOT reset the integral:
--- the throttle lever changes continuously, and the integral is the RPM the
--- controller has already found. Resetting on every notch would bump output.
+-- the throttle lever changes continuously, and the integral is the command
+-- the controller has already found. Resetting on every notch would bump output.
 function VelocityHold:setTarget(velocity)
     self.target = velocity
 end
@@ -342,8 +43,8 @@ function VelocityHold:nudgeTarget(delta)
     self.target = self.target + delta
 end
 
--- Park the loop: drop the speed target and integral. Detent 0 is not a
--- 0 m/s hold; pivot steering still uses the wheel at this detent.
+-- Park the loop: drop the speed target and integral. Detent 0 is stop,
+-- not a 0 m/s hold.
 function VelocityHold:holdOff()
     self.target = 0
     self.integral:reset()
@@ -351,19 +52,18 @@ function VelocityHold:holdOff()
 end
 
 -- Capture the current velocity as the target (used when engaging hold mode).
--- Optionally pass the current RPM to seed the integral so output starts
--- smoothly from the current command rather than from zero.
-function VelocityHold:captureTarget(currentRpm)
+-- Optionally pass the current normalized command to seed the integral so
+-- output starts smoothly from the current request rather than from zero.
+function VelocityHold:captureTarget(currentNormalized)
     self:setTarget(self.sensor.getVelocity())
-    if currentRpm ~= nil then
-        -- Back-calculate integral so initial output matches current RPM.
+    if currentNormalized ~= nil then
+        -- Back-calculate integral so initial output matches current command.
         -- At capture moment error is 0, so output = integral * I_GAIN.
-        self.integral:set(currentRpm / VelocityHold.I_GAIN)
+        self.integral:set(currentNormalized / VelocityHold.I_GAIN)
     end
 end
 
--- Returns a PI RPM value based on velocity error, clamped to the current
--- output range (see setCeiling).
+-- Returns a PI speed request in [0, 1] based on velocity error.
 function VelocityHold:read()
     local error = self.target - self.sensor.getVelocity()
 
@@ -381,6 +81,78 @@ function VelocityHold:read()
     local value = (error * VelocityHold.GAIN) + (self.integral.value * VelocityHold.I_GAIN)
     value = self.output:clamp(value)
     return value
+end
+
+-- LNAV heading helpers. Wheel getTargetAngle() and nav-table getBearing()
+-- are the same relative command: 0 straight, +right, -left, wrapped ±180.
+-- The mixer does not care which peripheral produced the bearing.
+
+-- Minecraft / nav-table heading (0 = south, ±180) to compass degrees
+-- (0 = north, 90 = east, 180 = south, 270 = west), clockwise.
+function toStandardHeading(rawHeading)
+    if not isFiniteNumber(rawHeading) then
+        return nil
+    end
+    local heading = (180 - rawHeading) % 360
+    if heading < 0 then
+        heading = heading + 360
+    end
+    return heading
+end
+
+function readStandardHeading(navigationTable)
+    if navigationTable == nil then
+        return nil
+    end
+    return toStandardHeading(unpackReading(navigationTable.getHeading()))
+end
+
+-- NAV whenever the table has a live target; otherwise WHEEL.
+-- Returns source ("NAV"|"WHEEL"), relative bearing (degrees).
+function selectHeadingCommand(navigationTable, steeringWheel)
+    if navigationTable ~= nil and navigationTable.hasTarget() then
+        local bearing = unpackReading(navigationTable.getBearing())
+        if not isFiniteNumber(bearing) then
+            bearing = 0
+        end
+        return "NAV", bearing
+    end
+    local angle = 0
+    if steeringWheel ~= nil then
+        angle = unpackReading(steeringWheel.getTargetAngle())
+        if not isFiniteNumber(angle) then
+            angle = 0
+        end
+    end
+    return "WHEEL", angle
+end
+
+-- Linear relative bearing -> normalized steering in [-1, 1].
+-- Deadband and full-authority angle come from SHIP.LNAV.
+function normalizedSteering(bearing)
+    if not isFiniteNumber(bearing) then
+        return 0
+    end
+    local deadband = SHIP.LNAV.steerDeadband
+    local fullAngle = SHIP.LNAV.steerFullAngle
+    local magnitude = math.abs(bearing)
+    if magnitude <= deadband then
+        return 0
+    end
+    local span = fullAngle - deadband
+    local command
+    if span <= 0 then
+        command = 1
+    else
+        command = (magnitude - deadband) / span
+        if command > 1 then
+            command = 1
+        end
+    end
+    if bearing < 0 then
+        return -command
+    end
+    return command
 end
 
 -- VerticalSpeedHold is the VNAV inner loop: vertical-speed error -> burner

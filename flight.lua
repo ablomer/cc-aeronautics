@@ -1,4 +1,5 @@
 require("util")
+require("config")
 
 -- Propeller drives a Create rotational speed controller. Unlike the old
 -- analog transmissions (brakes: higher signal = slower), setTargetSpeed
@@ -32,9 +33,89 @@ function Propeller:setSpeed(speed)
     self.lastSpeed = speed
     local commanded = self.invert and -speed or speed
     if self.lastCommanded == nil or commanded ~= self.lastCommanded then
-        self.rsc.setTargetSpeed(commanded)
+        if self.rsc ~= nil then
+            self.rsc.setTargetSpeed(commanded)
+        end
         self.lastCommanded = commanded
     end
+end
+
+-- Mix a normalized speed request [0, 1] and steering request [-1, 1]
+-- into left/right propeller RPM. Steering is preserved; common-mode
+-- (forward) thrust is reduced when the pair would exceed maxRpm.
+--
+-- Sign: +steering is a right turn (left faster / right slower).
+-- invertSteer flips that if the hull yaws the wrong way.
+function mixDifferentialThrust(speedReq, steerReq, opts)
+    opts = opts or SHIP.LNAV
+    local forwardRpm = opts.forwardRpm
+    local turnRpm = opts.turnRpm
+    local maxRpm = opts.maxRpm
+    local invertSteer = opts.invertSteer
+
+    speedReq = Range:new(0, 1):clamp(speedReq or 0)
+    local requestedSteer = Range:new(-1, 1):clamp(steerReq or 0)
+    local steer = requestedSteer
+    if invertSteer then
+        steer = -steer
+    end
+
+    local requestedCommon = speedReq * forwardRpm
+    local differential = steer * turnRpm
+    local absDiff = math.abs(differential)
+    if absDiff > maxRpm then
+        differential = differential > 0 and maxRpm or -maxRpm
+        absDiff = maxRpm
+    end
+
+    local maxCommon = maxRpm - absDiff
+    if maxCommon < 0 then
+        maxCommon = 0
+    end
+    local appliedCommon = requestedCommon
+    if appliedCommon > maxCommon then
+        appliedCommon = maxCommon
+    end
+
+    local leftRpm = appliedCommon + differential
+    local rightRpm = appliedCommon - differential
+    local limit = Range:new(-maxRpm, maxRpm)
+    leftRpm = limit:clamp(leftRpm)
+    rightRpm = limit:clamp(rightRpm)
+
+    return {
+        requestedSpeed = speedReq,
+        requestedSteer = requestedSteer,
+        requestedCommonRpm = requestedCommon,
+        appliedCommonRpm = appliedCommon,
+        differentialRpm = differential,
+        leftRpm = leftRpm,
+        rightRpm = rightRpm,
+        speedReduced = appliedCommon + 0.0001 < requestedCommon,
+    }
+end
+
+-- Applies mixDifferentialThrust to a left/right Propeller pair and
+-- keeps the last mix result for the display snapshot.
+DifferentialThrustMixer = {}
+
+function DifferentialThrustMixer:new(leftProp, rightProp, opts)
+    local t = setmetatable({}, { __index = DifferentialThrustMixer })
+    t.left = leftProp
+    t.right = rightProp
+    t.opts = opts or SHIP.LNAV
+    t.last = nil
+    return t
+end
+
+function DifferentialThrustMixer:apply(speedReq, steerReq)
+    local result = mixDifferentialThrust(speedReq, steerReq, self.opts)
+    self.left:setSpeed(result.leftRpm)
+    self.right:setSpeed(result.rightRpm)
+    result.leftRpm = self.left.lastSpeed
+    result.rightRpm = self.right.lastSpeed
+    self.last = result
+    return result
 end
 
 -- Analog transmissions still used as brakes on the vertical prop bank.
@@ -51,53 +132,6 @@ end
 function AnalogPropeller:setPower(power)
     self.transmission.setSignal(15 - power)
     self.lastPower = power
-end
-
--- SteeringWheel wraps the physical wheel so every reader sees a deadzoned
--- angle. getAngle() is 0 inside the deadzone; lastRaw is the unfiltered
--- peripheral reading for debugging centering. getMaxAngle is cached at
--- construction (scroll-configurable 1..360) so getNormalized stays cheap.
-SteeringWheel = {}
-
-function SteeringWheel:new(peripheralId, opts)
-    local t = setmetatable({}, { __index = SteeringWheel })
-    t.wheel = peripheral.wrap(peripheralId)
-    opts = opts or {}
-    t.deadzone = opts.deadzone or 1.0
-    t.maxAngle = 180
-    if t.wheel ~= nil and t.wheel.getMaxAngle ~= nil then
-        local max = t.wheel.getMaxAngle()
-        if isFiniteNumber(max) and max > 0 then
-            t.maxAngle = max
-        end
-    end
-    t.lastRaw = 0
-    t.lastAngle = 0
-    return t
-end
-
-function SteeringWheel:getAngle()
-    local raw = 0
-    if self.wheel ~= nil then
-        raw = self.wheel.getAngle() or 0
-    end
-    self.lastRaw = raw
-    if math.abs(raw) <= self.deadzone then
-        self.lastAngle = 0
-    else
-        self.lastAngle = raw
-    end
-    return self.lastAngle
-end
-
--- Deadzoned wheel as a fraction of cached max deflection, in [-1, 1].
-function SteeringWheel:getNormalized()
-    local angle = self:getAngle()
-    if self.maxAngle <= 0 then return 0 end
-    local n = angle / self.maxAngle
-    if n > 1 then return 1 end
-    if n < -1 then return -1 end
-    return n
 end
 
 -- BurnerBank fans one commanded amount out to every hot air burner in the

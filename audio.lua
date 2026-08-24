@@ -36,10 +36,6 @@ local CUES = {
     lnav_hold = {
         { "harp", 0.8, 12 },
     },
-    lnav_nav = {
-        { "bit", 1.0, 12 },
-        { "bit", 1.0, 16 },
-    },
     vnav_hold = {
         { "harp", 0.8, 15 },
     },
@@ -62,18 +58,11 @@ local CUES = {
         { "snare", 1.5, 12 },
         { "hat",   1.2, 18 },
     },
-    nav_acquire = {
-        { "pling", 0.8, 15 },
-    },
-    nav_lost = {
-        { "pling", 0.8, 8 },
-    },
 }
 
 local LNAV_CUES = {
     stop = "lnav_stop",
     hold = "lnav_hold",
-    nav  = "lnav_nav",
 }
 
 local VNAV_CUES = {
@@ -89,7 +78,6 @@ function ShipAudio:new(speakers)
     t.speakers = speakers or {}
     t.lastLnav = nil
     t.lastVnav = nil
-    t.lastNavActive = nil
     t.lastFault = false
     t.lastFaultWarn = nil
     t.lastProximityBeep = nil
@@ -139,7 +127,7 @@ function ShipAudio:proximityBeep(agl, now)
 end
 
 -- state uses the same snapshot as FlightDisplay:update:
---   lnavMode, vnavMode, navActive, altitudeFault, lnavFault, landing, agl
+--   lnavMode, vnavMode, altitudeFault, landing, agl
 function ShipAudio:update(state)
     local now = os.clock()
 
@@ -159,12 +147,7 @@ function ShipAudio:update(state)
     end
     self.lastVnav = state.vnavMode
 
-    if self.lastNavActive ~= nil and state.navActive ~= self.lastNavActive then
-        self:playCue(state.navActive and "nav_acquire" or "nav_lost")
-    end
-    self.lastNavActive = state.navActive
-
-    local anyFault = state.altitudeFault == true or state.lnavFault == true
+    local anyFault = state.altitudeFault == true
     if anyFault then
         local justSet = not self.lastFault
         local due = self.lastFaultWarn == nil or now - self.lastFaultWarn >= ShipAudio.FAULT_INTERVAL

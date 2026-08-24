@@ -1,5 +1,3 @@
-require("util")
-
 FlightDisplay = {}
 
 local W, H = 51, 19
@@ -11,14 +9,12 @@ local COL_LABEL    = colors.lightGray
 local COL_VALUE    = colors.white
 local COL_MANUAL   = colors.yellow
 local COL_HOLD     = colors.green
-local COL_NAV      = colors.cyan
 local COL_TERRAIN  = colors.orange
 local COL_FLARE    = colors.cyan
 
 local LNAV_MODE = {
     stop = { label = "[ STOP ]   ", color = COL_MANUAL },
-    hold = { label = "[ HDG ]    ", color = COL_HOLD },
-    nav  = { label = "[ NAV ]    ", color = COL_NAV },
+    hold = { label = "[ HOLD ]   ", color = COL_HOLD },
 }
 
 local VNAV_MODE = {
@@ -61,12 +57,6 @@ local function writeLabel(term, x, y, label)
     writeAt(term, x, y, label, COL_LABEL)
 end
 
--- Round first, then wrap, so 359.7 prints as 000 instead of 360.
-local function fmtHdg(deg)
-    if not isFiniteNumber(deg) then return "--" end
-    return string.format("%03d", math.floor(deg + 0.5) % 360)
-end
-
 function FlightDisplay:new()
     local t = setmetatable({}, { __index = FlightDisplay })
     t.term = term
@@ -81,20 +71,17 @@ function FlightDisplay:update(state)
     --   velocity: number (m/s)
     --   throttle: number (0-15 lever notch)
     --   targetVelocity: number (m/s, from the throttle lever)
-    --   lnavMode: "stop"|"hold"|"nav"
-    --   steeringAngle: number (deadzoned wheel degrees)
-    --   heading: number|nil (compass heading, 0-359)
-    --   targetHeading: number (heading hold setpoint, 0-359)
-    --   commandedTurnRate: number (deg/s wheel slew; 0 in NAV/landed)
-    --   lnavFault: boolean
-    --   navActive: boolean
-    --   navBearing: number|nil (degrees, only when navActive)
-    --   navHeading: number|nil (same as heading; kept for older readers)
-    --   navOutput: number|nil (steering output in [-1,1])
-    --   navDistance: number|nil (metres, only when navActive)
-    --   navSteering: boolean (true when NAV is writing the heading setpoint)
-    --   propeller1Rpm: number (last RPM sent to propeller 1)
-    --   propeller2Rpm: number (last RPM sent to propeller 2)
+    --   lnavMode: "stop"|"hold"
+    --   heading: number|nil (0-360, 0 = north)
+    --   steerSource: "NAV"|"WHEEL"
+    --   relativeBearing: number (deg, selected heading command)
+    --   requestedSpeed: number (normalized speed request 0-1)
+    --   requestedSteer: number (normalized steering request -1-1)
+    --   requestedCommonRpm: number (forward RPM before mixer reduction)
+    --   appliedCommonRpm: number (forward RPM after mixer reduction)
+    --   speedReduced: boolean (mixer shed forward thrust for steering)
+    --   propeller1Rpm: number (applied left RPM)
+    --   propeller2Rpm: number (applied right RPM)
     --   altitude: number (current height, m)
     --   targetAltitude: number (target height, m; unused when landing)
     --   landing: boolean (burner lever detent 0)
@@ -128,130 +115,128 @@ function FlightDisplay:update(state)
     -- Row 3: divider
     drawBorderLine(t, 3, BORDER_MID)
 
-    -- Row 4: LNAV mode + speed target (mirrors the VNAV header row)
+    -- Row 4: LNAV mode + heading + steering source
     drawRow(t, 4)
     writeLabel(t, 3, 4, "LNAV")
     local lnav = LNAV_MODE[state.lnavMode] or LNAV_MODE.hold
     writeAt(t, 12, 4, lnav.label, lnav.color)
-    writeLabel(t, 26, 4, "TARGET")
-    if state.lnavMode == "stop" then
-        writeAt(t, 34, 4, string.format("%-10s", "--"), COL_MANUAL)
+    writeLabel(t, 24, 4, "HDG")
+    if state.heading ~= nil then
+        writeAt(t, 28, 4, string.format("%3.0f", state.heading))
     else
-        writeAt(t, 34, 4, string.format("%-10s", string.format("%.2f m/s", state.targetVelocity or 0)), COL_HOLD)
+        writeAt(t, 28, 4, " --")
     end
+    writeLabel(t, 34, 4, "SRC")
+    local src = state.steerSource or "WHEEL"
+    local srcColor = src == "NAV" and COL_HOLD or COL_MANUAL
+    writeAt(t, 38, 4, string.format("%-5s", src), srcColor)
 
-    -- Row 5: actual velocity + wheel
+    -- Row 5: actual velocity + speed target + throttle detent
     drawRow(t, 5)
-    writeLabel(t, 3, 5, "VEL     ")
-    writeAt(t, 14, 5, string.format("%-10s", string.format("%.2f m/s", state.velocity or 0)))
-    writeLabel(t, 26, 5, "WHEEL ")
-    writeAt(t, 34, 5, string.format("%-10s", string.format("%.1f deg", state.steeringAngle or 0)))
+    writeLabel(t, 3, 5, "VEL")
+    writeAt(t, 7, 5, string.format("%-8s", string.format("%.2f", state.velocity or 0)))
+    writeLabel(t, 16, 5, "TGT")
+    if state.lnavMode == "stop" then
+        writeAt(t, 20, 5, string.format("%-8s", "--"), COL_MANUAL)
+    else
+        writeAt(t, 20, 5, string.format("%-8s", string.format("%.2f", state.targetVelocity or 0)), COL_HOLD)
+    end
+    writeLabel(t, 29, 5, "THR")
+    writeAt(t, 33, 5, string.format("%d", state.throttle or 0))
 
-    -- Row 6: propeller RPM
+    -- Row 6: requested speed / steering / common-mode RPM
     drawRow(t, 6)
-    writeLabel(t, 3, 6, "P1      ")
-    writeAt(t, 14, 6, string.format("%-10s", string.format("%d", state.propeller1Rpm or 0)))
-    writeLabel(t, 26, 6, "P2    ")
-    writeAt(t, 34, 6, string.format("%-10s", string.format("%d", state.propeller2Rpm or 0)))
+    writeLabel(t, 3, 6, "REQ")
+    writeLabel(t, 7, 6, "SPD")
+    writeAt(t, 11, 6, string.format("%4.2f", state.requestedSpeed or 0))
+    writeLabel(t, 17, 6, "STR")
+    writeAt(t, 21, 6, string.format("%+5.2f", state.requestedSteer or 0))
+    writeLabel(t, 28, 6, "COM")
+    writeAt(t, 32, 6, string.format("%d", math.floor((state.requestedCommonRpm or 0) + 0.5)))
 
-    -- Row 7: VNAV divider
-    drawBorderLine(t, 7, BORDER_MID)
-
-    -- Row 8: VNAV mode + altitude target
-    drawRow(t, 8)
-    writeLabel(t, 3, 8, "VNAV")
-    local vnav = VNAV_MODE[state.vnavMode] or VNAV_MODE.hold
-    writeAt(t, 12, 8, vnav.label, vnav.color)
-    writeLabel(t, 26, 8, "TARGET")
-    if state.landing then
-        writeAt(t, 34, 8, string.format("%-10s", "--"), COL_MANUAL)
-    else
-        writeAt(t, 34, 8, string.format("%-10s", string.format("%.1f m", state.targetAltitude or 0)), COL_HOLD)
+    -- Row 7: applied left/right RPM and common-mode after mixer
+    drawRow(t, 7)
+    writeLabel(t, 3, 7, "APP")
+    writeLabel(t, 7, 7, "L")
+    writeAt(t, 9, 7, string.format("%4d", state.propeller1Rpm or 0))
+    writeLabel(t, 15, 7, "R")
+    writeAt(t, 17, 7, string.format("%4d", state.propeller2Rpm or 0))
+    writeLabel(t, 23, 7, "COM")
+    local comColor = state.speedReduced and COL_MANUAL or COL_VALUE
+    writeAt(t, 27, 7, string.format("%d", math.floor((state.appliedCommonRpm or 0) + 0.5)), comColor)
+    if state.speedReduced then
+        writeAt(t, 32, 7, "CUT", COL_MANUAL)
     end
 
-    -- Row 9: current altitude / vertical speed
+    -- Row 8: VNAV divider
+    drawBorderLine(t, 8, BORDER_MID)
+
+    -- Row 9: VNAV mode + altitude target
     drawRow(t, 9)
-    local altColor = state.altitudeFault and colors.red or COL_VALUE
-    writeLabel(t, 3, 9, "ALT     ")
-    writeAt(t, 14, 9, string.format("%-10s", string.format("%.1f m", state.altitude or 0)), altColor)
-    writeLabel(t, 26, 9, "VSPD  ")
-    writeAt(t, 34, 9, string.format("%-10s", string.format("%.2f m/s", state.verticalSpeed or 0)))
-
-    -- Row 10: burner / AGL / desired VS / vertical prop power
-    drawRow(t, 10)
-    writeLabel(t, 3, 10, "BURN")
-    writeAt(t, 8, 10, string.format("%-5s", string.format("%.0f", state.burnerAmount or 0)))
-    writeLabel(t, 14, 10, "AGL")
-    if state.agl ~= nil then
-        writeAt(t, 18, 10, string.format("%-7s", string.format("%.1f m", state.agl)))
+    writeLabel(t, 3, 9, "VNAV")
+    local vnav = VNAV_MODE[state.vnavMode] or VNAV_MODE.hold
+    writeAt(t, 12, 9, vnav.label, vnav.color)
+    writeLabel(t, 26, 9, "TARGET")
+    if state.landing then
+        writeAt(t, 34, 9, string.format("%-10s", "--"), COL_MANUAL)
     else
-        writeAt(t, 18, 10, string.format("%-7s", "--"))
+        writeAt(t, 34, 9, string.format("%-10s", string.format("%.1f m", state.targetAltitude or 0)), COL_HOLD)
     end
-    writeLabel(t, 26, 10, "DVS")
-    writeAt(t, 30, 10, string.format("%-7s", string.format("%.2f", state.desiredVS or 0)))
-    writeLabel(t, 38, 10, "VP")
-    writeAt(t, 41, 10, string.format("%-6s", string.format("%.1f", state.verticalPropPower or 0)))
 
-    -- Row 11: ATT divider
-    drawBorderLine(t, 11, BORDER_MID)
+    -- Row 10: current altitude / vertical speed
+    drawRow(t, 10)
+    local altColor = state.altitudeFault and colors.red or COL_VALUE
+    writeLabel(t, 3, 10, "ALT     ")
+    writeAt(t, 14, 10, string.format("%-10s", string.format("%.1f m", state.altitude or 0)), altColor)
+    writeLabel(t, 26, 10, "VSPD  ")
+    writeAt(t, 34, 10, string.format("%-10s", string.format("%.2f m/s", state.verticalSpeed or 0)))
 
-    -- Row 12: ATT mode + pitch
-    drawRow(t, 12)
-    writeLabel(t, 3, 12, "ATT")
+    -- Row 11: burner / AGL / desired VS / vertical prop power
+    drawRow(t, 11)
+    writeLabel(t, 3, 11, "BURN")
+    writeAt(t, 8, 11, string.format("%-5s", string.format("%.0f", state.burnerAmount or 0)))
+    writeLabel(t, 14, 11, "AGL")
+    if state.agl ~= nil then
+        writeAt(t, 18, 11, string.format("%-7s", string.format("%.1f m", state.agl)))
+    else
+        writeAt(t, 18, 11, string.format("%-7s", "--"))
+    end
+    writeLabel(t, 26, 11, "DVS")
+    writeAt(t, 30, 11, string.format("%-7s", string.format("%.2f", state.desiredVS or 0)))
+    writeLabel(t, 38, 11, "VP")
+    writeAt(t, 41, 11, string.format("%-6s", string.format("%.1f", state.verticalPropPower or 0)))
+
+    -- Row 12: ATT divider
+    drawBorderLine(t, 12, BORDER_MID)
+
+    -- Row 13: ATT mode + pitch
+    drawRow(t, 13)
+    writeLabel(t, 3, 13, "ATT")
     local att = ATT_MODE[state.attMode] or ATT_MODE.off
-    writeAt(t, 12, 12, att.label, att.color)
-    writeLabel(t, 26, 12, "PITCH")
+    writeAt(t, 12, 13, att.label, att.color)
+    writeLabel(t, 26, 13, "PITCH")
     local pitchColor = state.attFault and colors.red or COL_VALUE
     if state.pitch ~= nil then
-        writeAt(t, 34, 12, string.format("%-10s", string.format("%.1f deg", state.pitch)), pitchColor)
+        writeAt(t, 34, 13, string.format("%-10s", string.format("%.1f deg", state.pitch)), pitchColor)
     else
-        writeAt(t, 34, 12, string.format("%-10s", "--"), pitchColor)
+        writeAt(t, 34, 13, string.format("%-10s", "--"), pitchColor)
     end
 
-    -- Row 13: stabilizer angle / command / RPM
-    drawRow(t, 13)
-    writeLabel(t, 3, 13, "STAB")
+    -- Row 14: stabilizer angle / command / RPM
+    drawRow(t, 14)
+    writeLabel(t, 3, 14, "STAB")
     if state.stabAngle ~= nil then
-        writeAt(t, 8, 13, string.format("%-7s", string.format("%.1f", state.stabAngle)))
+        writeAt(t, 8, 14, string.format("%-7s", string.format("%.1f", state.stabAngle)))
     else
-        writeAt(t, 8, 13, string.format("%-7s", "--"))
+        writeAt(t, 8, 14, string.format("%-7s", "--"))
     end
-    writeLabel(t, 16, 13, "CMD")
-    writeAt(t, 20, 13, string.format("%-7s", string.format("%.1f", state.stabTarget or 0)))
-    writeLabel(t, 28, 13, "RPM")
-    writeAt(t, 32, 13, string.format("%-6s", string.format("%d", state.stabRpm or 0)))
+    writeLabel(t, 16, 14, "CMD")
+    writeAt(t, 20, 14, string.format("%-7s", string.format("%.1f", state.stabTarget or 0)))
+    writeLabel(t, 28, 14, "RPM")
+    writeAt(t, 32, 14, string.format("%-6s", string.format("%d", state.stabRpm or 0)))
 
-    -- Rows 14-18: heading hold (always) + bearing/distance when a target exists
-    drawBorderLine(t, 14, BORDER_MID)
-
-    drawRow(t, 15)
-    writeLabel(t, 3, 15, "HDG     ")
-    local hdgColor = state.lnavFault and colors.red or COL_VALUE
-    writeAt(t, 14, 15, string.format("%-10s", fmtHdg(state.heading)), hdgColor)
-    writeLabel(t, 26, 15, "TGT   ")
-    local tgtColor = state.navSteering and COL_NAV or COL_HOLD
-    writeAt(t, 34, 15, string.format("%-10s", fmtHdg(state.targetHeading)), tgtColor)
-
-    drawRow(t, 16)
-    writeLabel(t, 3, 16, "RATE    ")
-    writeAt(t, 14, 16, string.format("%-10s", string.format("%+.1f", state.commandedTurnRate or 0)))
-    writeLabel(t, 26, 16, "STEER ")
-    writeAt(t, 34, 16, string.format("%-10s", string.format("%.2f", state.navOutput or 0)))
-
-    drawRow(t, 17)
-    writeLabel(t, 3, 17, "BRG     ")
-    if state.navActive and state.navBearing ~= nil then
-        writeAt(t, 14, 17, string.format("%-10s", string.format("%.1f deg", state.navBearing)), COL_NAV)
-    else
-        writeAt(t, 14, 17, string.format("%-10s", "--"))
+    drawBorderLine(t, 15, BORDER_BTM)
+    for y = 16, H do
+        drawRow(t, y)
     end
-    writeLabel(t, 26, 17, "DIST  ")
-    if state.navActive and state.navDistance ~= nil then
-        writeAt(t, 34, 17, string.format("%-10s", string.format("%.1f m", state.navDistance)), COL_NAV)
-    else
-        writeAt(t, 34, 17, string.format("%-10s", "--"))
-    end
-
-    drawBorderLine(t, 18, BORDER_BTM)
-    drawRow(t, 19)
 end

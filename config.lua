@@ -17,54 +17,40 @@ SHIP = {
         -- Tune after a flight if this is short of the hull's cruise.
         maxSpeed = 2.0,
 
-        -- Propeller RSC cap. Create clamps setTargetSpeed to [-256, 256];
-        -- this is the software ceiling the mixer and velocity loop share.
+        -- Common-mode RPM at a speed request of 1.0. Fly straight at lever
+        -- 15: if hold cannot reach maxSpeed, raise this. Leave headroom
+        -- so forwardRpm + turnRpm stays at or under maxRpm; otherwise
+        -- the mixer will shed forward thrust to keep full turning authority.
+        -- 192 + 64 = 256 uses this hull's actuator ceiling with no CUT.
+        forwardRpm = 192,
+
+        -- Differential RPM at a steering request of ±1.0. One side gets
+        -- +turnRpm and the other -turnRpm on a pivot (speed request 0).
+        -- Raise if turns are sluggish; lower if the hull yaws too hard.
+        turnRpm = 64,
+
+        -- Actuator ceiling sent to each propeller RSC. Create clamps
+        -- setTargetSpeed to [-256, 256]; this is the software cap the
+        -- mixer and Propeller objects share. Measure nothing — it is
+        -- the hardware limit unless a gearbox needs a lower software cap.
         maxRpm = 256,
 
-        -- RPM differential at full steering lock (steer = ±1). At maxRpm
-        -- the props fully counter-rotate for the fastest pivot, using the
-        -- whole -256..256 range. The mixer gives this first claim on the
-        -- budget and surge takes what is left, so turn authority does not
-        -- fall off with throttle. Lower this to soften the heading loop:
-        -- it scales RPM-per-degree without touching HeadingHold's gains.
-        maxSteerDiff = 128,
+        -- Relative bearing (deg) ignored as noise. Measure wheel slop
+        -- at rest; keep this just above the idle wobble.
+        steerDeadband = 2.0,
 
-        -- RPM differential while holding heading (wheel centered). The
-        -- full maxSteerDiff range is for commanded turns; using it to
-        -- chase a few degrees of error just weaves. 48 RPM is enough
-        -- to trim a biased hull at hover without spinning the props past ~50.
-        maxHoldDiff = 48,
-
-        -- RPM differential for a persistent hold error (beyond HOLD_FAR).
-        -- Cruise veer is stronger than hover; this is the extra trim
-        -- budget so a 10° droop can still close. Near-target taper
-        -- still keys off maxHoldDiff, so hover weave stays gone.
-        maxHoldFarDiff = 120,
+        -- Relative bearing (deg) that commands full turning authority.
+        -- Smaller = snappier. Wheel and nav-table bearings share this
+        -- linear map: deadband .. full angle -> 0 .. 1.
+        steerFullAngle = 45.0,
 
         -- Positive RSC RPM is backward on this hull; invert so +command is forward.
         invertLeft = true,
         invertRight = true,
 
-        -- Flip if the ship spins continuously instead of settling, or
-        -- the wheel yaws the hull the wrong way. Positive steer should
-        -- yaw right.
-        invertSteer = true,
-
-        -- Wheel angles within this many degrees of center read as 0.
-        -- Applied before normalizing to [-1, 1].
-        steeringDeadzone = 1.0,
-
-        -- Deg/s of heading-setpoint advance at full wheel lock.
-        -- Tune down if full lock routinely trips maxHeadingLead.
-        maxTurnRate = 20.0,
-
-        -- Power-curve exponent on |normalized wheel|. 1 is linear;
-        -- >1 gives finer control near center.
-        turnRateExponent = 1.7,
-
-        -- Max heading error (deg) the wheel-rate command is allowed
-        -- to grow. Always permits movement that reduces the error.
-        maxHeadingLead = 25.0,
+        -- Flip if a positive bearing (target / wheel to the right)
+        -- yaws the hull left. Independent of invertLeft/Right.
+        invertSteer = false,
     },
     VNAV = {
         -- Optical AGL (metres) when the hull is sitting on the ground.
@@ -96,7 +82,7 @@ SHIP = {
 
 PERIPHERALS = {
     -- ------------------------
-    -- LNAV: horizontal navigation (forward velocity + steering)
+    -- LNAV: speed hold + heading (shared left/right props)
     -- ------------------------
     LNAV = {
         -- type: Create rotational speed controller
@@ -109,7 +95,7 @@ PERIPHERALS = {
 
         -- type: throttle_lever
         -- Velocity setpoint: position 0-15 maps onto 0 .. SHIP.LNAV.maxSpeed.
-        -- Detent 0 is stop. Driven to 0 via setSignal when nav arrives.
+        -- Detent 0 is stop.
         throttleLever = "throttle_lever_9",
 
         -- type: velocity_sensor
@@ -117,11 +103,13 @@ PERIPHERALS = {
         velocitySensor = "velocity_sensor_4",
 
         -- type: steering_wheel
-        -- Turn-rate command for heading hold when NAV is not steering.
+        -- Pilot relative turn command via getTargetAngle(), degrees in
+        -- [-180, 180]. Used whenever the navigation table has no target.
         steeringWheel = "steering_wheel_5",
 
         -- type: navigation_table
-        -- Heading + compass bearing/distance; drives HeadingHold in NAV mode.
+        -- hasTarget() / getBearing() select NAV vs WHEEL. getHeading()
+        -- is the hull yaw used for the display (converted to 0-360, north=0).
         navigationTable = "navigation_table_2",
     },
 
@@ -182,7 +170,7 @@ PERIPHERALS = {
     AUDIO = {
         -- type: speaker (list)
         -- Every speaker plays the same playNote cues for LNAV/VNAV
-        -- transitions, nav acquire/lost, terrain warnings, and faults.
+        -- transitions, terrain warnings, and faults.
         speakers = {
             "speaker_1",
         },
@@ -205,7 +193,7 @@ PERIPHERALS = {
         gimbalSensor = "gimbal_sensor_1",
 
         -- type: navigation_table
-        -- Same physical peripheral as LNAV.navigationTable; introspected via debug.lua's 'Navigation table' menu entry.
+        -- Introspected via debug.lua's 'Navigation table' menu entry.
         navigationTable = "navigation_table_2",
     },
 }
