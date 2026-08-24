@@ -60,6 +60,17 @@ function isFiniteNumber(v)
     return type(v) == "number" and v == v
 end
 
+-- Wrap a named peripheral. Returns nil if the name is missing, empty,
+-- or not attached. Unlike findPeripheral, this never errors: named
+-- roles that are optional (the stabilizer) use this so a missing
+-- peripheral disables that system instead of crashing startup.
+function wrapOptional(name)
+    if type(name) ~= "string" or name == "" then
+        return nil
+    end
+    return peripheral.wrap(name)
+end
+
 -- Discover peripherals by type so unique-type roles do not need a
 -- ComputerCraft string ID in config.lua. peripheral.find returns one
 -- wrapped table per match (see https://tweaked.cc/module/peripheral.html).
@@ -85,6 +96,17 @@ function findPeripheral(ty)
     return found[1]
 end
 
+-- At most one peripheral of this type. Returns nil if none (so the
+-- caller can disable that system). Errors if more than one.
+function findOptionalPeripheral(ty)
+    local found = { peripheral.find(ty) }
+    if #found > 1 then
+        error("Expected one " .. ty .. " but found " .. #found
+            .. " (" .. peripheralNames(found) .. ")")
+    end
+    return found[1]
+end
+
 -- One or more peripherals of this type. Errors if none.
 function findPeripherals(ty)
     local found = { peripheral.find(ty) }
@@ -92,4 +114,10 @@ function findPeripherals(ty)
         error("Required peripheral not found: " .. ty)
     end
     return found
+end
+
+-- Zero or more peripherals of this type. Never errors: an empty list
+-- disables that system (speakers) instead of crashing startup.
+function findOptionalPeripherals(ty)
+    return { peripheral.find(ty) }
 end

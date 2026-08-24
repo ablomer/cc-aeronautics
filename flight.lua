@@ -167,8 +167,12 @@ Servo.MIN_RPM  = 1     -- integer floor of setTargetSpeed
 
 function Servo:new(speedControllerId, bearingId, opts)
     local t = setmetatable({}, { __index = Servo })
-    t.rsc = peripheral.wrap(speedControllerId)
-    t.bearing = peripheral.wrap(bearingId)
+    t.rsc = wrapOptional(speedControllerId)
+    t.bearing = wrapOptional(bearingId)
+    -- Both the RSC and the bearing are required to close the loop.
+    -- Either missing means the stabilizer is not installed: available
+    -- stays false and update() is a no-op, not a fault.
+    t.available = t.rsc ~= nil and t.bearing ~= nil
     opts = opts or {}
     t.minAngle = opts.minAngle or -45
     t.maxAngle = opts.maxAngle or 45
@@ -182,6 +186,11 @@ function Servo:new(speedControllerId, bearingId, opts)
     t.lastError = 0
     t.fault = false
     t.lastClock = nil
+    -- RSC present without a bearing: park the shaft so a leftover
+    -- speed command cannot keep spinning with no feedback.
+    if t.rsc ~= nil and not t.available then
+        t:stop()
+    end
     return t
 end
 
@@ -197,9 +206,7 @@ function Servo:stop()
 end
 
 function Servo:update()
-    if self.rsc == nil or self.bearing == nil then
-        self.fault = true
-        self.lastError = 0
+    if not self.available then
         return 0
     end
 

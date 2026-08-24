@@ -47,17 +47,23 @@ local landedLatched = false  -- stays true after touchdown until the lever leave
 -- ------------------------
 -- ATT
 -- ------------------------
-local gimbal = findPeripheral("gimbal_sensor")
+local gimbal = findOptionalPeripheral("gimbal_sensor")
 local stabilizer = Servo:new(
     PERIPHERALS.ATT.stabilizerSpeedController,
     PERIPHERALS.ATT.stabilizerBearing,
     SHIP.ATT
 )
+-- Pitch hold needs the gimbal, RSC, and bearing. Any missing piece
+-- disables the system rather than faulting.
+local attAvailable = gimbal ~= nil and stabilizer.available
+if not attAvailable and stabilizer.available then
+    stabilizer:stop()
+end
 local pitchHold = PitchHold:new(gimbal)
 local pitchSign = SHIP.ATT.invertPitch and -1 or 1
 
 local display = FlightDisplay:new()
-local audio = ShipAudio:new(findPeripherals("speaker"))
+local audio = ShipAudio:new(findOptionalPeripherals("speaker"))
 
 -- Maps the 1-15 burner lever position to a target altitude within the
 -- operational range. Lever 0 is the landing detent and does not use this
@@ -166,18 +172,25 @@ local function controlUpdate()
         lnavMode = "hold"
     end
 
-    -- ATT: hold gimbal pitch at 0 via the stabilizer servo. Park the
-    -- loop on the ground so it does not fight the hull sitting still.
+    -- ATT: hold gimbal pitch at 0 via the stabilizer servo. Skip the
+    -- loop when the gimbal, RSC, or bearing is missing. Park on the
+    -- ground so it does not fight the hull sitting still.
     local attMode
-    if landedLatched then
+    if not attAvailable then
+        attMode = "none"
+        if gimbal ~= nil then
+            pitchHold:sense()
+        end
+    elseif landedLatched then
         attMode = "off"
         pitchHold:captureState()
         stabilizer:setTarget(0)
+        stabilizer:update()
     else
         attMode = "level"
         stabilizer:setTarget(pitchHold:read() * pitchSign)
+        stabilizer:update()
     end
-    stabilizer:update()
 
     local snapshot = {
         velocity       = velocitySensor.getVelocity(),
@@ -210,7 +223,7 @@ local function controlUpdate()
         stabTarget     = stabilizer.target,
         stabRpm        = stabilizer.lastSpeed or 0,
         attMode        = attMode,
-        attFault       = pitchHold.fault or stabilizer.fault,
+        attFault       = pitchHold.fault or (attAvailable and stabilizer.fault),
     }
     display:update(snapshot)
     audio:update(snapshot)

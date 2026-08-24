@@ -484,27 +484,38 @@ function PitchHold:captureState()
     self.lastClock = nil
 end
 
--- Returns a desired stabilizer angle clamped to SHIP.ATT travel.
--- Call once per tick; the integral is stateful.
-function PitchHold:read()
+-- Sample gimbal pitch and rate into lastPitch / lastPitchRate.
+-- Returns true when the reading is usable. Does not run the hold loop,
+-- so it is safe when the stabilizer is not installed.
+function PitchHold:sense()
     if self.gimbal == nil then
         self.fault = true
-        return self.lastOutput
+        return false
     end
 
     local pitch, _roll = unpackReading(self.gimbal.getAngles())
     local wx = unpackReading(self.gimbal.getAngularRates())
     if not isFiniteNumber(pitch) then
         self.fault = true
-        return self.lastOutput
+        return false
     end
     self.fault = false
     self.lastPitch = pitch
     if isFiniteNumber(wx) then
         self.lastPitchRate = wx
-    else
-        wx = self.lastPitchRate
     end
+    return true
+end
+
+-- Returns a desired stabilizer angle clamped to SHIP.ATT travel.
+-- Call once per tick; the integral is stateful.
+function PitchHold:read()
+    if not self:sense() then
+        return self.lastOutput
+    end
+
+    local pitch = self.lastPitch
+    local wx = self.lastPitchRate
 
     local dt = stepClock(self, 0.1)
 

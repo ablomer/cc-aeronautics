@@ -9,9 +9,11 @@
 --
 -- Unique-type peripherals are discovered at startup with
 -- peripheral.find and are not listed here:
---   exactly one: steering_wheel, navigation_table, gimbal_sensor,
+--   exactly one: steering_wheel, navigation_table,
 --                velocity_sensor, altitude_sensor
---   one or more: hot_air_burner, optical_sensor, speaker
+--   at most one: gimbal_sensor (ATT is disabled if missing)
+--   one or more: hot_air_burner, optical_sensor
+--   zero or more: speaker (audio is silent if none are attached)
 --
 -- Each remaining peripheral role is documented with a comment giving
 -- its type and a short description, immediately above the string ID.
@@ -21,25 +23,25 @@ SHIP = {
     LNAV = {
         -- Target velocity (m/s) at throttle lever 15. Lever 0 is stop.
         -- Tune after a flight if this is short of the hull's cruise.
-        maxSpeed = 2.0,
+        maxSpeed = 5.0,
 
         -- Common-mode RPM at a speed request of 1.0. Fly straight at lever
         -- 15: if hold cannot reach maxSpeed, raise this. Leave headroom
         -- so forwardRpm + turnRpm stays at or under maxRpm; otherwise
         -- the mixer will shed forward thrust to keep full turning authority.
         -- 192 + 64 = 256 uses this hull's actuator ceiling with no CUT.
-        forwardRpm = 192,
+        forwardRpm = 96,
 
         -- Differential RPM at a steering request of ±1.0. One side gets
         -- +turnRpm and the other -turnRpm on a pivot (speed request 0).
         -- Raise if turns are sluggish; lower if the hull yaws too hard.
-        turnRpm = 64,
+        turnRpm = 32,
 
         -- Actuator ceiling sent to each propeller RSC. Create clamps
         -- setTargetSpeed to [-256, 256]; this is the software cap the
         -- mixer and Propeller objects share. Measure nothing — it is
         -- the hardware limit unless a gearbox needs a lower software cap.
-        maxRpm = 256,
+        maxRpm = 128,
 
         -- Relative bearing (deg) ignored as noise. Measure wheel slop
         -- at rest; keep this just above the idle wobble.
@@ -56,7 +58,7 @@ SHIP = {
 
         -- Flip if a positive bearing (target / wheel to the right)
         -- yaws the hull left. Independent of invertLeft/Right.
-        invertSteer = false,
+        invertSteer = true,
     },
     VNAV = {
         -- Optical AGL (metres) when the hull is sitting on the ground.
@@ -93,16 +95,16 @@ PERIPHERALS = {
     LNAV = {
         -- type: Create rotational speed controller
         -- Drives the right propeller. setTargetSpeed is integer RPM in [-256, 256].
-        rightPropellerSpeedController = "Create_RotationSpeedController_5",
+        rightPropellerSpeedController = "Create_RotationSpeedController_0",
 
         -- type: Create rotational speed controller
         -- Drives the left propeller. setTargetSpeed is integer RPM in [-256, 256].
-        leftPropellerSpeedController = "Create_RotationSpeedController_4",
+        leftPropellerSpeedController = "Create_RotationSpeedController_1",
 
         -- type: throttle_lever
         -- Velocity setpoint: position 0-15 maps onto 0 .. SHIP.LNAV.maxSpeed.
         -- Detent 0 is stop.
-        throttleLever = "throttle_lever_11",
+        throttleLever = "throttle_lever_0",
     },
 
     -- ------------------------
@@ -112,16 +114,19 @@ PERIPHERALS = {
         -- type: throttle_lever
         -- Lever 1-15 maps linearly onto the altitude range; detent 0 is land
         -- (fixed sink, then optical flare).
-        burnerLever = "throttle_lever_10",
+        burnerLever = "throttle_lever_1",
 
         -- type: analog_transmission
         -- Drives all vertical propellers together (single shared transmission).
         -- Leftover +up boost when VerticalSpeedHold is short of desiredVS.
-        verticalPropellerTransmission = "analog_transmission_12",
+        verticalPropellerTransmission = "analog_transmission_0",
     },
 
     -- ------------------------
     -- ATT: attitude (gimbal pitch hold via the horizontal stabilizer)
+    -- Requires the gimbal, stabilizer RSC, and bearing. If any is
+    -- missing at startup, pitch hold is not run and the display shows
+    -- ATT [ NONE ].
     -- ------------------------
     ATT = {
         -- type: Create rotational speed controller

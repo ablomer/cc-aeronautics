@@ -195,6 +195,9 @@ local PROGRAMS = {
     { name = "Navigation table", run = function()
         runPeripheralDebug(findPeripheral("navigation_table"), "Navigation table")
     end },
+    { name = "Electric motor", run = function()
+        runPeripheralDebug(findPeripheral("electric_motor"), "Electric motor")
+    end },
     { name = "Stabilizer servo", run = runStabilizerServoDebug },
 }
 

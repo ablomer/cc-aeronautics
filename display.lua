@@ -28,6 +28,7 @@ local VNAV_MODE = {
 local ATT_MODE = {
     level = { label = "[ LEVEL ]  ", color = COL_HOLD },
     off   = { label = "[ OFF ]    ", color = COL_MANUAL },
+    none  = { label = "[ NONE ]   ", color = COL_LABEL },
 }
 
 local BORDER_TOP = "\xc9" .. string.rep("\xcd", W - 2) .. "\xbb"
@@ -97,7 +98,7 @@ function FlightDisplay:update(state)
     --   stabAngle: number|nil (stabilizer bearing angle, deg)
     --   stabTarget: number (commanded stabilizer angle, deg)
     --   stabRpm: number (last RSC speed)
-    --   attMode: "level"|"off"
+    --   attMode: "level"|"off"|"none" (none = gimbal, RSC, or bearing missing)
     --   attFault: boolean
     -- }
 
@@ -225,15 +226,23 @@ function FlightDisplay:update(state)
     -- Row 14: stabilizer angle / command / RPM
     drawRow(t, 14)
     writeLabel(t, 3, 14, "STAB")
-    if state.stabAngle ~= nil then
-        writeAt(t, 8, 14, string.format("%-7s", string.format("%.1f", state.stabAngle)))
-    else
+    if state.attMode == "none" then
         writeAt(t, 8, 14, string.format("%-7s", "--"))
+        writeLabel(t, 16, 14, "CMD")
+        writeAt(t, 20, 14, string.format("%-7s", "--"))
+        writeLabel(t, 28, 14, "RPM")
+        writeAt(t, 32, 14, string.format("%-6s", "--"))
+    else
+        if state.stabAngle ~= nil then
+            writeAt(t, 8, 14, string.format("%-7s", string.format("%.1f", state.stabAngle)))
+        else
+            writeAt(t, 8, 14, string.format("%-7s", "--"))
+        end
+        writeLabel(t, 16, 14, "CMD")
+        writeAt(t, 20, 14, string.format("%-7s", string.format("%.1f", state.stabTarget or 0)))
+        writeLabel(t, 28, 14, "RPM")
+        writeAt(t, 32, 14, string.format("%-6s", string.format("%d", state.stabRpm or 0)))
     end
-    writeLabel(t, 16, 14, "CMD")
-    writeAt(t, 20, 14, string.format("%-7s", string.format("%.1f", state.stabTarget or 0)))
-    writeLabel(t, 28, 14, "RPM")
-    writeAt(t, 32, 14, string.format("%-6s", string.format("%d", state.stabRpm or 0)))
 
     drawBorderLine(t, 15, BORDER_BTM)
     for y = 16, H do
