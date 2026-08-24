@@ -59,3 +59,37 @@ BURNER_AMOUNT_RANGE = Range:new(5, 500)
 function isFiniteNumber(v)
     return type(v) == "number" and v == v
 end
+
+-- Discover peripherals by type so unique-type roles do not need a
+-- ComputerCraft string ID in config.lua. peripheral.find returns one
+-- wrapped table per match (see https://tweaked.cc/module/peripheral.html).
+
+local function peripheralNames(wrapped)
+    local names = {}
+    for i, p in ipairs(wrapped) do
+        names[i] = peripheral.getName(p)
+    end
+    return table.concat(names, ", ")
+end
+
+-- Exactly one peripheral of this type. Errors if none or more than one.
+function findPeripheral(ty)
+    local found = { peripheral.find(ty) }
+    if #found == 0 then
+        error("Required peripheral not found: " .. ty)
+    end
+    if #found > 1 then
+        error("Expected one " .. ty .. " but found " .. #found
+            .. " (" .. peripheralNames(found) .. ")")
+    end
+    return found[1]
+end
+
+-- One or more peripherals of this type. Errors if none.
+function findPeripherals(ty)
+    local found = { peripheral.find(ty) }
+    if #found == 0 then
+        error("Required peripheral not found: " .. ty)
+    end
+    return found
+end

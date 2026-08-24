@@ -1,3 +1,4 @@
+require("util")
 require("flight")
 require("autopilot")
 require("display")
@@ -17,27 +18,21 @@ local rightPropeller = Propeller:new(PERIPHERALS.LNAV.rightPropellerSpeedControl
     invert = SHIP.LNAV.invertRight,
 })
 local throttleLever = peripheral.wrap(PERIPHERALS.LNAV.throttleLever)
-local velocitySensor = peripheral.wrap(PERIPHERALS.LNAV.velocitySensor)
-local steeringWheel = peripheral.wrap(PERIPHERALS.LNAV.steeringWheel)
-local navigationTable = peripheral.wrap(PERIPHERALS.LNAV.navigationTable)
+local velocitySensor = findPeripheral("velocity_sensor")
+local steeringWheel = findPeripheral("steering_wheel")
+local navigationTable = findPeripheral("navigation_table")
 local thrustMixer = DifferentialThrustMixer:new(leftPropeller, rightPropeller, SHIP.LNAV)
 
 -- ------------------------
 -- VNAV
 -- ------------------------
 local burnerLever = peripheral.wrap(PERIPHERALS.VNAV.burnerLever)
-local altitudeSensor = peripheral.wrap(PERIPHERALS.VNAV.altitudeSensor)
-local burners = {}
-for _, burnerId in ipairs(PERIPHERALS.VNAV.burners) do
-    table.insert(burners, peripheral.wrap(burnerId))
-end
+local altitudeSensor = findPeripheral("altitude_sensor")
+local burners = findPeripherals("hot_air_burner")
 
 -- Vertical propellers all controlled by the same analog transmission
 local verticalPropellers = AnalogPropeller:new(PERIPHERALS.VNAV.verticalPropellerTransmission)
-local opticalSensors = {}
-for _, sensorId in ipairs(PERIPHERALS.VNAV.opticalSensors) do
-    table.insert(opticalSensors, peripheral.wrap(sensorId))
-end
+local opticalSensors = findPeripherals("optical_sensor")
 
 local MAX_POWER = 15  -- throttle / burner lever notches (still 0-15)
 
@@ -52,7 +47,7 @@ local landedLatched = false  -- stays true after touchdown until the lever leave
 -- ------------------------
 -- ATT
 -- ------------------------
-local gimbal = peripheral.wrap(PERIPHERALS.ATT.gimbalSensor)
+local gimbal = findPeripheral("gimbal_sensor")
 local stabilizer = Servo:new(
     PERIPHERALS.ATT.stabilizerSpeedController,
     PERIPHERALS.ATT.stabilizerBearing,
@@ -62,11 +57,7 @@ local pitchHold = PitchHold:new(gimbal)
 local pitchSign = SHIP.ATT.invertPitch and -1 or 1
 
 local display = FlightDisplay:new()
-local speakers = {}
-for _, speakerId in ipairs(PERIPHERALS.AUDIO.speakers) do
-    table.insert(speakers, peripheral.wrap(speakerId))
-end
-local audio = ShipAudio:new(speakers)
+local audio = ShipAudio:new(findPeripherals("speaker"))
 
 -- Maps the 1-15 burner lever position to a target altitude within the
 -- operational range. Lever 0 is the landing detent and does not use this

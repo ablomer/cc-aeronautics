@@ -2,6 +2,7 @@
 -- debug program from a list and run it. Press Ctrl+T to stop whichever
 -- program is running and return to the shell.
 
+require("util")
 require("config")
 require("flight")
 
@@ -32,12 +33,12 @@ end
 -- introspects the peripheral via peripheral.getMethods and live-prints every
 -- zero-argument getter it finds ("get*"/"is*"/"has*"). That keeps it useful
 -- even if the real API differs from assumptions.
-local function runPeripheralDebug(peripheralName, label)
-    local sensor = peripheral.wrap(peripheralName)
+local function runPeripheralDebug(sensor, label)
     if not sensor then
-        error("Could not find peripheral: " .. peripheralName)
+        error("Could not find peripheral: " .. label)
     end
 
+    local peripheralName = peripheral.getName(sensor)
     local methodNames = peripheral.getMethods(peripheralName)
     table.sort(methodNames)
 
@@ -182,10 +183,18 @@ end
 
 -- Add new debug programs here as { name = "...", run = function ... end }.
 local PROGRAMS = {
-    { name = "Laser sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.laserSensor, "Laser sensor") end },
-    { name = "Optical sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.opticalSensor, "Optical sensor") end },
-    { name = "Gimbal sensor", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.gimbalSensor, "Gimbal sensor") end },
-    { name = "Navigation table", run = function() runPeripheralDebug(PERIPHERALS.DEBUG.navigationTable, "Navigation table") end },
+    { name = "Laser sensor", run = function()
+        runPeripheralDebug(peripheral.wrap(PERIPHERALS.DEBUG.laserSensor), "Laser sensor")
+    end },
+    { name = "Optical sensor", run = function()
+        runPeripheralDebug(findPeripherals("optical_sensor")[1], "Optical sensor")
+    end },
+    { name = "Gimbal sensor", run = function()
+        runPeripheralDebug(findPeripheral("gimbal_sensor"), "Gimbal sensor")
+    end },
+    { name = "Navigation table", run = function()
+        runPeripheralDebug(findPeripheral("navigation_table"), "Navigation table")
+    end },
     { name = "Stabilizer servo", run = runStabilizerServoDebug },
 }
 

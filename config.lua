@@ -1,14 +1,20 @@
 -- Ship-specific configuration.
 --
--- This is the single source of truth for which physical peripheral (by its
--- ComputerCraft string ID) backs each logical role, and for geometry that
--- depends on how this hull is built. Other files should reference
--- PERIPHERALS.<SYSTEM>.<role> and SHIP.<SYSTEM>.<key> instead of hardcoding
--- those values, so that re-wiring or re-measuring the ship only requires
--- editing this file.
+-- This is the single source of truth for peripherals that share a type
+-- with another role (so they must be named by ComputerCraft string ID)
+-- and for geometry that depends on how this hull is built. Other files
+-- should reference PERIPHERALS.<SYSTEM>.<role> and SHIP.<SYSTEM>.<key>
+-- instead of hardcoding those values, so that re-wiring or re-measuring
+-- the ship only requires editing this file.
 --
--- Each peripheral role is documented with a comment giving its type and a
--- short description, immediately above the string ID.
+-- Unique-type peripherals are discovered at startup with
+-- peripheral.find and are not listed here:
+--   exactly one: steering_wheel, navigation_table, gimbal_sensor,
+--                velocity_sensor, altitude_sensor
+--   one or more: hot_air_burner, optical_sensor, speaker
+--
+-- Each remaining peripheral role is documented with a comment giving
+-- its type and a short description, immediately above the string ID.
 
 -- Hull / sensor geometry and ship-measured limits (not peripheral IDs).
 SHIP = {
@@ -96,21 +102,7 @@ PERIPHERALS = {
         -- type: throttle_lever
         -- Velocity setpoint: position 0-15 maps onto 0 .. SHIP.LNAV.maxSpeed.
         -- Detent 0 is stop.
-        throttleLever = "throttle_lever_9",
-
-        -- type: velocity_sensor
-        -- Reports current ship velocity, used by VelocityHold and shown on the display.
-        velocitySensor = "velocity_sensor_4",
-
-        -- type: steering_wheel
-        -- Pilot relative turn command via getTargetAngle(), degrees in
-        -- [-180, 180]. Used whenever the navigation table has no target.
-        steeringWheel = "steering_wheel_5",
-
-        -- type: navigation_table
-        -- hasTarget() / getBearing() select NAV vs WHEEL. getHeading()
-        -- is the hull yaw used for the display (converted to 0-360, north=0).
-        navigationTable = "navigation_table_2",
+        throttleLever = "throttle_lever_11",
     },
 
     -- ------------------------
@@ -122,39 +114,16 @@ PERIPHERALS = {
         -- (fixed sink, then optical flare).
         burnerLever = "throttle_lever_10",
 
-        -- type: altitude_sensor
-        -- Reports current height and vertical speed; height feeds the altitude
-        -- outer loop, vertical speed is tracked by VerticalSpeedHold.
-        altitudeSensor = "altitude_sensor_3",
-
-        -- type: hot_air_burner (list)
-        -- Heat sources; BurnerBank fans the commanded amount out to every burner in this list.
-        burners = {
-            "hot_air_burner_3",
-        },
-
         -- type: analog_transmission
         -- Drives all vertical propellers together (single shared transmission).
         -- Leftover +up boost when VerticalSpeedHold is short of desiredVS.
         verticalPropellerTransmission = "analog_transmission_12",
-
-        -- type: optical_sensor (list)
-        -- Downward sensors; worst-case (closest hasHit) AGL drives cruise
-        -- terrain climb and the landing flare. Never wired to an actuator.
-        opticalSensors = {
-            "optical_sensor_1",
-        },
     },
 
     -- ------------------------
     -- ATT: attitude (gimbal pitch hold via the horizontal stabilizer)
     -- ------------------------
     ATT = {
-        -- type: gimbal_sensor
-        -- Reports body-frame pitch/roll (getAngles) and rates (getAngularRates).
-        -- Pitch is xAngle, rotation about body-X; 0 = level.
-        gimbalSensor = "gimbal_sensor_1",
-
         -- type: Create rotational speed controller
         -- Drives the stabilizer mechanical bearing. setTargetSpeed is integer RPM.
         stabilizerSpeedController = "Create_RotationSpeedController_3",
@@ -165,35 +134,11 @@ PERIPHERALS = {
     },
 
     -- ------------------------
-    -- AUDIO: noteblock cues for mode changes and alerts
-    -- ------------------------
-    AUDIO = {
-        -- type: speaker (list)
-        -- Every speaker plays the same playNote cues for LNAV/VNAV
-        -- transitions, terrain warnings, and faults.
-        speakers = {
-            "speaker_1",
-        },
-    },
-
-    -- ------------------------
     -- DEBUG: peripherals only exercised by debug.lua's standalone menu
     -- ------------------------
     DEBUG = {
         -- type: laser_pointer
         -- Introspected live via debug.lua's 'Laser sensor' menu entry.
         laserSensor = "laser_pointer_2",
-
-        -- type: optical_sensor
-        -- Same physical peripheral as VNAV.opticalSensors[1]; introspected via debug.lua's 'Optical sensor' menu entry.
-        opticalSensor = "optical_sensor_1",
-
-        -- type: gimbal_sensor
-        -- Same physical peripheral as ATT.gimbalSensor; introspected via debug.lua's 'Gimbal sensor' menu entry.
-        gimbalSensor = "gimbal_sensor_1",
-
-        -- type: navigation_table
-        -- Introspected via debug.lua's 'Navigation table' menu entry.
-        navigationTable = "navigation_table_2",
     },
 }
