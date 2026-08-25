@@ -4,6 +4,7 @@ require("autopilot")
 require("display")
 require("audio")
 require("config")
+require("controls")
 
 
 -- ------------------------
@@ -80,6 +81,10 @@ local function leverToTargetVelocity(leverPosition)
 end
 
 local function controlUpdate()
+    -- Compute first, then flush every independent setter in one tick.
+    -- Sequential mainThread writes would each cost a server tick.
+    local batch = WriteBatch:new()
+
     local burnerLeverState = burnerLever.getState()
     local isFirstTick = lastBurnerLever == nil
     local landing = burnerLeverState == 0
@@ -117,7 +122,7 @@ local function controlUpdate()
     local steerSource, relativeBearing = selectHeadingCommand(navigationTable, steeringWheel)
     local yawRate = readYawRate(gimbal)
     local steerRequest = dampedSteering(normalizedSteering(relativeBearing), yawRate)
-    local mix = thrustMixer:apply(speedRequest, steerRequest)
+    local mix = thrustMixer:apply(speedRequest, steerRequest, batch)
     local heading = readStandardHeading(navigationTable)
 
     local desiredVS
@@ -127,12 +132,12 @@ local function controlUpdate()
         -- not hunt around DVS 0. Stays latched until the lever leaves 0.
         desiredVS = 0
         vnavMode = "landed"
-        burnerBank:setAmount(verticalSpeedHold:holdOff())
-        verticalPropellers:setSpeed(0)
+        burnerBank:setAmount(verticalSpeedHold:holdOff(), batch)
+        verticalPropellers:setSpeed(0, batch)
     elseif landing then
         desiredVS = landingDesiredVS(agl, hasGround)
         vnavMode = hasGround and "flare" or "land"
-        burnerBank:setAmount(verticalSpeedHold:read(desiredVS))
+        burnerBank:setAmount(verticalSpeedHold:read(desiredVS), batch)
         local propRpm = 0
         if not verticalSpeedHold.fault then
             propRpm = verticalPropRpm(
@@ -141,7 +146,7 @@ local function controlUpdate()
                 hasGround
             )
         end
-        verticalPropellers:setSpeed(propRpm)
+        verticalPropellers:setSpeed(propRpm, batch)
     else
         local height = altitudeSensor.getHeight()
         local altRate = altitudeHold:desiredRate(height)
@@ -154,7 +159,7 @@ local function controlUpdate()
             desiredVS = math.max(altRate, terrainVS)
         end
         vnavMode = (terrainVS > 0 and terrainVS > altRate) and "terrain" or "hold"
-        burnerBank:setAmount(verticalSpeedHold:read(desiredVS))
+        burnerBank:setAmount(verticalSpeedHold:read(desiredVS), batch)
         local propRpm = 0
         if not verticalSpeedHold.fault then
             propRpm = verticalPropRpm(
@@ -163,7 +168,7 @@ local function controlUpdate()
                 hasGround
             )
         end
-        verticalPropellers:setSpeed(propRpm)
+        verticalPropellers:setSpeed(propRpm, batch)
     end
 
     local lnavMode
@@ -184,11 +189,11 @@ local function controlUpdate()
         attMode = "off"
         pitchHold:captureState()
         stabilizer:setTarget(0)
-        stabilizer:update()
+        stabilizer:update(batch)
     else
         attMode = "level"
         stabilizer:setTarget(pitchHold:read() * pitchSign)
-        stabilizer:update()
+        stabilizer:update(batch)
     end
 
     local snapshot = {
@@ -227,6 +232,7 @@ local function controlUpdate()
     }
     display:update(snapshot)
     audio:update(snapshot)
+    batch:flush()
 end
 
 

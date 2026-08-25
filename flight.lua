@@ -1,5 +1,6 @@
 require("util")
 require("config")
+require("controls")
 
 -- Propeller drives a Create rotational speed controller.
 -- setTargetSpeed commands RPM directly. Range is integer [-256, 256];
@@ -26,17 +27,22 @@ function Propeller:new(speedControllerId, opts)
     return t
 end
 
-function Propeller:setSpeed(speed)
+function Propeller:setSpeed(speed, batch)
     speed = roundRpm(speed)
     speed = Range:new(-self.maxRpm, self.maxRpm):clamp(speed)
     self.lastSpeed = speed
     local commanded = self.invert and -speed or speed
-    if self.lastCommanded == nil or commanded ~= self.lastCommanded then
-        if self.rsc ~= nil then
-            self.rsc.setTargetSpeed(commanded)
-        end
-        self.lastCommanded = commanded
+    if self.lastCommanded ~= nil and commanded == self.lastCommanded then
+        return
     end
+    self.lastCommanded = commanded
+    if self.rsc == nil then
+        return
+    end
+    local rsc = self.rsc
+    WriteBatch.defer(batch, function()
+        rsc.setTargetSpeed(commanded)
+    end)
 end
 
 -- Mix a normalized speed request [0, 1] and steering request [-1, 1]
@@ -107,10 +113,10 @@ function DifferentialThrustMixer:new(leftProp, rightProp, opts)
     return t
 end
 
-function DifferentialThrustMixer:apply(speedReq, steerReq)
+function DifferentialThrustMixer:apply(speedReq, steerReq, batch)
     local result = mixDifferentialThrust(speedReq, steerReq, self.opts)
-    self.left:setSpeed(result.leftRpm)
-    self.right:setSpeed(result.rightRpm)
+    self.left:setSpeed(result.leftRpm, batch)
+    self.right:setSpeed(result.rightRpm, batch)
     result.leftRpm = self.left.lastSpeed
     result.rightRpm = self.right.lastSpeed
     self.last = result
@@ -118,24 +124,31 @@ function DifferentialThrustMixer:apply(speedReq, steerReq)
 end
 
 -- BurnerBank fans one commanded amount out to every hot air burner in the
--- collection. Clamping/rounding happens here at the actuator boundary so
--- callers (controllers) never have to worry about the peripheral's accepted
--- range.
+-- collection. Clamping happens here at the actuator boundary so callers
+-- never have to match the peripheral's accepted range. Identical repeats
+-- are skipped: setTargetAmount yields a server tick per burner.
 BurnerBank = {}
 
 function BurnerBank:new(burners)
     local t = setmetatable({}, { __index = BurnerBank })
     t.burners = burners
     t.lastAmount = BURNER_AMOUNT_RANGE.min
+    t.lastCommanded = nil  -- force a write on the first setAmount
     return t
 end
 
-function BurnerBank:setAmount(amount)
+function BurnerBank:setAmount(amount, batch)
     amount = BURNER_AMOUNT_RANGE:clamp(amount)
-    for _, burner in ipairs(self.burners) do
-        burner.setTargetAmount(amount)
-    end
     self.lastAmount = amount
+    if self.lastCommanded ~= nil and amount == self.lastCommanded then
+        return
+    end
+    self.lastCommanded = amount
+    for _, burner in ipairs(self.burners) do
+        WriteBatch.defer(batch, function()
+            burner.setTargetAmount(amount)
+        end)
+    end
 end
 
 -- Servo closes a mechanical bearing onto a target angle by commanding
@@ -181,14 +194,18 @@ function Servo:setTarget(angle)
     self.target = self.travel:clamp(angle)
 end
 
-function Servo:stop()
-    if self.rsc ~= nil then
-        self.rsc.setTargetSpeed(0)
-    end
+function Servo:stop(batch)
     self.lastSpeed = 0
+    if self.rsc == nil then
+        return
+    end
+    local rsc = self.rsc
+    WriteBatch.defer(batch, function()
+        rsc.setTargetSpeed(0)
+    end)
 end
 
-function Servo:update()
+function Servo:update(batch)
     if not self.available then
         return 0
     end
@@ -197,7 +214,7 @@ function Servo:update()
     if not isFiniteNumber(angle) then
         self.fault = true
         self.lastError = 0
-        self:stop()
+        self:stop(batch)
         return 0
     end
     self.fault = false
@@ -226,7 +243,10 @@ function Servo:update()
     end
 
     if self.lastSpeed == nil or speed ~= self.lastSpeed then
-        self.rsc.setTargetSpeed(speed)
+        local rsc = self.rsc
+        WriteBatch.defer(batch, function()
+            rsc.setTargetSpeed(speed)
+        end)
         self.lastSpeed = speed
     end
     return speed
