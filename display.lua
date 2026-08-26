@@ -45,6 +45,9 @@ local WIN = {
 local LNAV_WIN = {x = 2,  w = 23} -- under SPD + BRG
 local VNAV_WIN = {x = 26, w = 25} -- under ALT + HEAT
 
+-- Clickable PTN button (holding pattern). Direct-to never needs a click.
+local PTN_BTN = {x = 3, y = 14, w = 7, text = "[ PTN ]"}
+
 local function makeLine(left, fill, right, junctions)
     local chars = {}
     for i = 1, W do
@@ -145,6 +148,17 @@ function FlightDisplay:new()
     return t
 end
 
+-- Returns "ptn" when the click is on the holding-pattern button.
+function FlightDisplay:click(x, y)
+    if type(x) ~= "number" or type(y) ~= "number" then
+        return nil
+    end
+    if y == PTN_BTN.y and x >= PTN_BTN.x and x < PTN_BTN.x + PTN_BTN.w then
+        return "ptn"
+    end
+    return nil
+end
+
 function FlightDisplay:update(state)
     -- state = {
     --   velocity: number (m/s)
@@ -153,6 +167,8 @@ function FlightDisplay:update(state)
     --   lnavMode: "stop"|"hold"
     --   heading: number|nil (0-360, 0 = north)
     --   steerSource: "NAV"|"WHEEL"
+    --   navPattern: boolean (true = holding pattern, false = direct-to)
+    --   navCommandedBearing: number (deg, BRG target; 0 direct-to, ~±90 pattern)
     --   relativeBearing: number (deg, selected heading command)
     --   yawRate: number|nil (gimbal wy, deg/s; nil if the reading is unusable)
     --   speedReduced: boolean (mixer shed forward thrust for steering)
@@ -201,7 +217,7 @@ function FlightDisplay:update(state)
         writeWin(t, spdWin, 3, string.format("%5.2f", state.targetVelocity or 0), COL_SELECTED, "right")
     end
     if src == "NAV" then
-        writeWin(t, brgWin, 3, string.format("%+5.0f", 0), COL_SELECTED, "right")
+        writeWin(t, brgWin, 3, string.format("%+5.0f", state.navCommandedBearing or 0), COL_SELECTED, "right")
     else
         writeWin(t, brgWin, 3, "  ---", COL_SELECTED, "right")
     end
@@ -233,7 +249,11 @@ function FlightDisplay:update(state)
     writeLabel(t, LNAV_WIN.x + 1, 6, "LNAV")
     writeAt(t, LNAV_WIN.x + 6, 6, lnav.label, lnav.color)
     local srcColor = src == "NAV" and COL_HOLD or COL_MANUAL
-    writeWin(t, LNAV_WIN, 6, src, srcColor, "right")
+    local srcText = src
+    if src == "NAV" then
+        srcText = state.navPattern and "NAV PTN" or "NAV DTO"
+    end
+    writeWin(t, LNAV_WIN, 6, srcText, srcColor, "right")
     local vnav = VNAV_MODE[state.vnavMode] or VNAV_MODE.hold
     writeLabel(t, VNAV_WIN.x + 1, 6, "VNAV")
     writeAt(t, VNAV_WIN.x + 6, 6, vnav.label, vnav.color)
@@ -322,4 +342,15 @@ function FlightDisplay:update(state)
     for y = 13, H do
         drawRow(t, y)
     end
+    local ptnEnabled = src == "NAV"
+    local ptnActive = ptnEnabled and state.navPattern
+    local ptnFg = COL_LABEL
+    local ptnBg = COL_BG
+    if ptnActive then
+        ptnFg = colors.black
+        ptnBg = COL_HOLD
+    elseif ptnEnabled then
+        ptnFg = COL_MANUAL
+    end
+    writeAt(t, PTN_BTN.x, PTN_BTN.y, PTN_BTN.text, ptnFg, ptnBg)
 end

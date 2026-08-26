@@ -65,6 +65,11 @@ local pitchSign = SHIP.ATT.invertPitch and -1 or 1
 local display = FlightDisplay:new()
 local audio = ShipAudio:new(findOptionalPeripherals("speaker"))
 
+-- NAV leg: compass insert is always direct-to. PTN on the display
+-- is the only way onto a holding pattern.
+local navPattern = false
+local lastSteerSource = "WHEEL"
+
 -- Maps the 0-15 throttle lever onto 0 .. SHIP.LNAV.maxSpeed. Detent 0 is stop.
 local function leverToTargetVelocity(leverPosition)
     return (leverPosition / MAX_POWER) * SHIP.LNAV.maxSpeed
@@ -96,21 +101,60 @@ local function controlUpdate()
     local maxAlt = altitudeForHeatedVolume(maxVolume)
     maxAlt = Range:new(minAlt, AltitudeHold.HARD_CEILING):clamp(maxAlt)
 
-    -- Throttle lever is always a velocity setpoint. Detent 0 parks the
-    -- speed loop. Steering comes from the nav table when it has a
-    -- target, otherwise the wheel. Both are relative bearings.
+    -- Steering first: the mixer is a shared RPM pool, and a hard turn
+    -- linearly sheds the speed target so yaw can take the whole engine.
+    local steerSource, relativeBearing = selectHeadingCommand(navigationTable, steeringWheel)
+    if steerSource == "NAV" and lastSteerSource ~= "NAV" then
+        -- Compass just acquired: always Direct To, never a leftover pattern.
+        navPattern = false
+    elseif steerSource ~= "NAV" then
+        navPattern = false
+    end
+    lastSteerSource = steerSource
+
+    local yawRate = readYawRate(gimbal)
+    local navDistance = nil
+    local cmdBearing = 0
+    local steerRequest
+    if steerSource == "NAV" then
+        navDistance = readNavDistance(navigationTable)
+        cmdBearing = navCommandedBearing(navPattern)
+        steerRequest = trackYawRate(
+            navYawRateCommand(
+                relativeBearing,
+                velocitySensor.getVelocity(),
+                navDistance,
+                cmdBearing
+            ),
+            yawRate
+        )
+    else
+        steerRequest = dampedSteering(normalizedSteering(relativeBearing), yawRate)
+    end
+
     local leverState = throttleLever.getState()
+    local arrived = steerSource == "NAV"
+        and not navPattern
+        and isFiniteNumber(navDistance)
+        and navDistance <= SHIP.LNAV.navArriveRange
+    if arrived then
+        if leverState ~= 0 then
+            local lever = throttleLever
+            WriteBatch.defer(batch, function()
+                lever.setSignal(0)
+            end)
+        end
+        leverState = 0
+    end
     local speedRequest
     if leverState == 0 then
         speedRequest = velocityHold:holdOff()
     else
-        velocityHold:setTarget(leverToTargetVelocity(leverState))
+        local headroom = mixSpeedHeadroom(steerRequest)
+        velocityHold:setCeiling(headroom)
+        velocityHold:setTarget(leverToTargetVelocity(leverState) * headroom)
         speedRequest = velocityHold:read()
     end
-
-    local steerSource, relativeBearing = selectHeadingCommand(navigationTable, steeringWheel)
-    local yawRate = readYawRate(gimbal)
-    local steerRequest = dampedSteering(normalizedSteering(relativeBearing), yawRate)
     local mix = thrustMixer:apply(speedRequest, steerRequest, batch)
     local heading = readStandardHeading(navigationTable)
 
@@ -178,6 +222,8 @@ local function controlUpdate()
         lnavMode       = lnavMode,
         heading        = heading,
         steerSource    = steerSource,
+        navPattern     = navPattern,
+        navCommandedBearing = cmdBearing,
         relativeBearing = relativeBearing,
         yawRate        = yawRate,
         requestedSpeed = mix.requestedSpeed,
@@ -215,10 +261,16 @@ end
 
 local timer = os.startTimer(0.1)
 while true do
-    local event, p1 = os.pullEvent()
+    local event, p1, p2, p3 = os.pullEvent()
 
     if event == "timer" and p1 == timer then
         controlUpdate()
         timer = os.startTimer(0.1)
+    elseif event == "mouse_click" or event == "monitor_touch" then
+        -- mouse_click: button, x, y. monitor_touch: side, x, y.
+        -- PTN is opt-in only. Direct-to is compass insert, not a click.
+        if display:click(p2, p3) == "ptn" and lastSteerSource == "NAV" then
+            navPattern = not navPattern
+        end
     end
 end

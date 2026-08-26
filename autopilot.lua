@@ -43,11 +43,25 @@ function VelocityHold:nudgeTarget(delta)
     self.target = self.target + delta
 end
 
+-- Cap the normalized output. Used each tick so a hard turn can steal
+-- RPM without the integral winding against a mixer limit the loop
+-- cannot see. Pass 1 to restore the full engine.
+function VelocityHold:setCeiling(maxOutput)
+    if not isFiniteNumber(maxOutput) then
+        maxOutput = 1
+    end
+    self.output.max = Range:new(0, 1):clamp(maxOutput)
+    if self.output.max < self.output.min then
+        self.output.max = self.output.min
+    end
+end
+
 -- Park the loop: drop the speed target and integral. Detent 0 is stop,
 -- not a 0 m/s hold.
 function VelocityHold:holdOff()
     self.target = 0
     self.integral:reset()
+    self:setCeiling(1)
     return 0
 end
 
@@ -83,21 +97,52 @@ function VelocityHold:read()
     return value
 end
 
--- LNAV heading helpers. Wheel getTargetAngle() and nav-table getBearing()
--- are the same relative command: 0 straight, +right, -left, wrapped ±180.
--- The mixer does not care which peripheral produced the bearing.
+-- LNAV heading helpers. Wheel getTargetAngle() is a deflection. The
+-- nav table's getBearing() is a compass error to the resolved target
+-- (lodestone / spawn / map). Both are 0 straight, +right, -left, ±180.
+-- Wheel maps through normalizedSteering; NAV commands a yaw rate so
+-- cruise can keep up with a swinging needle.
+
+-- Wrap into [0, 360).
+function wrapDegrees360(angle)
+    if not isFiniteNumber(angle) then
+        return nil
+    end
+    angle = angle % 360
+    if angle < 0 then
+        angle = angle + 360
+    end
+    return angle
+end
+
+-- Wrap into (-180, 180].
+function wrapDegrees180(angle)
+    angle = wrapDegrees360(angle)
+    if angle == nil then
+        return nil
+    end
+    if angle > 180 then
+        angle = angle - 360
+    end
+    return angle
+end
+
+local function navTableYaw()
+    local yaw = SHIP.LNAV.navTableYaw
+    if not isFiniteNumber(yaw) then
+        return 0
+    end
+    return yaw
+end
 
 -- Minecraft / nav-table heading (0 = south, ±180) to compass degrees
--- (0 = north, 90 = east, 180 = south, 270 = west), clockwise.
+-- (0 = north, 90 = east, 180 = south, 270 = west), clockwise, then
+-- rotated by SHIP.LNAV.navTableYaw so the table's 0-mark is north.
 function toStandardHeading(rawHeading)
     if not isFiniteNumber(rawHeading) then
         return nil
     end
-    local heading = (180 - rawHeading) % 360
-    if heading < 0 then
-        heading = heading + 360
-    end
-    return heading
+    return wrapDegrees360((180 - rawHeading) + navTableYaw())
 end
 
 function readStandardHeading(navigationTable)
@@ -115,6 +160,7 @@ function selectHeadingCommand(navigationTable, steeringWheel)
         if not isFiniteNumber(bearing) then
             bearing = 0
         end
+        bearing = wrapDegrees180(bearing + navTableYaw())
         return "NAV", bearing
     end
     local angle = 0
@@ -168,31 +214,151 @@ function normalizedSteering(bearing)
     return command
 end
 
--- Blend the pilot/nav steering request with a yaw-rate damper.
+-- Right-turn-positive yaw rate with yawDampDeadband applied. Nil
+-- when the gimbal reading is unusable so callers can fall open-loop.
 -- Body +wy is a left turn (CCW about up); +steer is a right turn, so
--- the measured rate is flipped unless invertYawDamp is set. At a
--- request of 0 this is a stop-turn loop: leftover wy is braked until
--- it sits inside yawDampDeadband. No gimbal -> returns the request.
-function dampedSteering(steerReq, yawRate)
-    steerReq = Range:new(-1, 1):clamp(steerReq or 0)
+-- the measured rate is flipped unless invertYawDamp is set.
+function measuredYawRate(yawRate)
     if not isFiniteNumber(yawRate) then
-        return steerReq
+        return nil
     end
-    -- Right-turn-positive rate. Default: +wy (left) -> negative.
     local measured = -yawRate
     if SHIP.LNAV.invertYawDamp then
         measured = yawRate
     end
     local deadband = SHIP.LNAV.yawDampDeadband
     if math.abs(measured) <= deadband then
-        measured = 0
+        return 0
     elseif measured > 0 then
-        measured = measured - deadband
-    else
-        measured = measured + deadband
+        return measured - deadband
     end
-    local command = steerReq - measured * SHIP.LNAV.yawDampGain
-    return Range:new(-1, 1):clamp(command)
+    return measured + deadband
+end
+
+-- Track a yaw-rate setpoint (deg/s, right-turn positive). Equilibrium
+-- is at yawCmd even when |yawCmd| > 1/yawDampGain; the mixer saturates
+-- until the hull catches up. That is what lets NAV turn faster at
+-- cruise without weakening the stop-turn brake. No gimbal: map the
+-- rate back to a thrust request with the same gain.
+function trackYawRate(yawCmd, yawRate)
+    local gain = SHIP.LNAV.yawDampGain
+    if not isFiniteNumber(yawCmd) then
+        yawCmd = 0
+    end
+    local measured = measuredYawRate(yawRate)
+    if measured == nil then
+        return Range:new(-1, 1):clamp(yawCmd * gain)
+    end
+    return Range:new(-1, 1):clamp((yawCmd - measured) * gain)
+end
+
+-- Blend a normalized wheel request with the yaw-rate damper. Full
+-- deflection settles at about 1/yawDampGain deg/s. At a request of 0
+-- this is a stop-turn loop. No gimbal -> returns the request.
+function dampedSteering(steerReq, yawRate)
+    steerReq = Range:new(-1, 1):clamp(steerReq or 0)
+    local gain = SHIP.LNAV.yawDampGain
+    if gain <= 0 then
+        return steerReq
+    end
+    return trackYawRate(steerReq / gain, yawRate)
+end
+
+-- Horizontal range to the nav-table target (metres). 3D distance with
+-- the vertical offset removed: sqrt(d^2 - dy^2). Nil when the table
+-- is missing or the 3D reading is unusable. Falls back to 3D if the
+-- vertical offset is absent.
+-- https://solastrius.github.io/CreateAvionics/peripheral/navigation_table.html
+function readNavDistance(navigationTable)
+    if navigationTable == nil or navigationTable.getDistanceToTarget == nil then
+        return nil
+    end
+    local distance = unpackReading(navigationTable.getDistanceToTarget())
+    if not isFiniteNumber(distance) or distance < 0 then
+        return nil
+    end
+    if navigationTable.getVerticalOffsetToTarget == nil then
+        return distance
+    end
+    local dy = unpackReading(navigationTable.getVerticalOffsetToTarget())
+    if not isFiniteNumber(dy) then
+        return distance
+    end
+    local horizontalSq = distance * distance - dy * dy
+    if horizontalSq <= 0 then
+        return 0
+    end
+    return math.sqrt(horizontalSq)
+end
+
+-- Relative bearing the NAV tracker should fly. Direct-to is 0 (nose
+-- on the target). A holding pattern is ±90° (target abeam) so the
+-- hull orbits at whatever radius speed and turn rate produce.
+function navCommandedBearing(pattern)
+    if not pattern then
+        return 0
+    end
+    if SHIP.LNAV.navHoldClockwise == false then
+        return -90
+    end
+    return 90
+end
+
+-- Commanded yaw rate (deg/s) that tracks commandedBearing. Direct-to
+-- uses 0 (nose on the compass). A holding pattern uses ~±90° so the
+-- hull orbits. P is on bearing error; LOS uses the actual needle so
+-- a tangent orbit matches v/range.
+function navYawRateCommand(bearing, speed, distance, commandedBearing)
+    if not isFiniteNumber(bearing) then
+        return 0
+    end
+    if not isFiniteNumber(commandedBearing) then
+        commandedBearing = 0
+    end
+    local trackError = wrapDegrees180(bearing - commandedBearing)
+    if not isFiniteNumber(trackError) then
+        trackError = 0
+    end
+
+    local bearingTerm = 0
+    local deadband = SHIP.LNAV.steerDeadband
+    local magnitude = math.abs(trackError)
+    if magnitude > deadband then
+        local signed = trackError
+        if trackError > 0 then
+            signed = trackError - deadband
+        else
+            signed = trackError + deadband
+        end
+        bearingTerm = signed * SHIP.LNAV.navBearingGain
+    end
+
+    local losTerm = 0
+    if isFiniteNumber(speed) and isFiniteNumber(distance) then
+        local range = distance
+        local minRange = SHIP.LNAV.navMinRange
+        if range < minRange then
+            range = minRange
+        end
+        if range > 0 then
+            losTerm = math.deg(speed * math.sin(math.rad(bearing)) / range)
+                * SHIP.LNAV.navLosGain
+        end
+    end
+
+    local yawCmd = bearingTerm + losTerm
+    local cruiseRate = SHIP.LNAV.navMaxYawRate
+    local slowRate = cruiseRate
+    local gain = SHIP.LNAV.yawDampGain
+    if gain > 0 then
+        slowRate = 1 / gain
+    end
+    local maxRate = cruiseRate
+    if isFiniteNumber(speed) and SHIP.LNAV.maxSpeed > 0 then
+        local t = Range:new(0, 1):clamp(math.abs(speed) / SHIP.LNAV.maxSpeed)
+        maxRate = slowRate + t * (cruiseRate - slowRate)
+    end
+    return Range:new(-maxRate, maxRate):clamp(yawCmd)
 end
 
 -- VNAV constants and the altitude-hold inner loop.

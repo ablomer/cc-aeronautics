@@ -24,60 +24,86 @@ SHIP = {
         -- Tune after a flight if this is short of the hull's cruise.
         maxSpeed = 6.5,
 
-        -- Common-mode RPM at a speed request of 1.0. Fly straight at lever
-        -- 15: if hold cannot reach maxSpeed, raise this. Leave headroom
-        -- so forwardRpm + turnRpm stays at or under maxRpm; otherwise
-        -- the mixer will shed forward thrust to keep full turning authority.
-        -- 96 + 48 = 144 is over the 128 ceiling, so a full-deflection
-        -- turn at cruise drops common-mode to 80 and the display shows
-        -- CUT. Deliberate: braking authority matters more than the last
-        -- 16 RPM of forward thrust while turning.
-        forwardRpm = 64,
+        -- Common-mode RPM at a speed request of 1.0 (straight flight).
+        -- Match maxRpm so a full lever can use the whole engine. Turning
+        -- takes RPM from this pool first; the speed loop's target and
+        -- ceiling scale with whatever is left (see mixSpeedHeadroom).
+        forwardRpm = 72,
 
-        -- Differential RPM at a steering request of ±1.0. One side gets
-        -- +turnRpm and the other -turnRpm on a pivot (speed request 0).
-        -- This is yaw torque, so it sets how fast the hull reaches a
-        -- turn rate and how hard the damper can brake one, but not the
-        -- sustained rate itself (that is 1/yawDampGain). Raise to cut
-        -- overshoot when centering; lower if the hull snaps too hard.
-        -- Above maxRpm - forwardRpm the mixer starts shedding forward
-        -- thrust in hard turns and the display shows CUT.
-        turnRpm = 28,
+        -- Differential RPM at a steering request of ±1.0. Match maxRpm
+        -- so a full turn can use the whole engine (one side +max, the
+        -- other -max when speed has been fully shed). Linear: a 0.5
+        -- steer request leaves half the RPM for speed. This is yaw
+        -- torque, so it also sets how hard the damper can brake a
+        -- residual spin. Lower if small corrections feel like a pivot.
+        turnRpm = 72,
 
         -- Actuator ceiling sent to each propeller RSC. Create clamps
         -- setTargetSpeed to [-256, 256]; this is the software cap the
         -- mixer and Propeller objects share. Measure nothing — it is
         -- the hardware limit unless a gearbox needs a lower software cap.
-        maxRpm = 92,
+        maxRpm = 72,
 
         -- Relative bearing (deg) ignored as noise. Measure wheel slop
         -- at rest; keep this just above the idle wobble.
         steerDeadband = 2.0,
 
         -- Relative bearing (deg) that commands full turning authority.
-        -- Smaller = snappier. Wheel and nav-table bearings share this
-        -- linear map: deadband .. full angle -> 0 .. 1.
-        steerFullAngle = 45.0,
+        -- Smaller = snappier. Wheel only: deadband .. full angle -> 0 .. 1.
+        -- NAV compass tracking uses navBearingGain / navMaxYawRate instead.
+        steerFullAngle = 180.0,
 
         -- Yaw-rate damper. Simulated hulls keep spinning after the
         -- wheel recenters because differential thrust going to 0 does
         -- not cancel leftover angular velocity. This term brakes that
-        -- residual. Units: normalized steer per deg/s of yaw rate.
+        -- residual. Units: normalized steer per deg/s of yaw-rate error.
         --
-        -- This gain does double duty, so read both effects before
-        -- retuning:
-        --   Braking. A residual rate reaches full counter-thrust
-        --   (turnRpm) once it exceeds 1/gain deg/s. Below that the
-        --   brake is proportional and weaker.
-        --   Sustained turn rate. Holding full wheel settles where the
-        --   damper cancels the request, at about 1/gain deg/s. Raising
-        --   the gain to stop faster also makes turns slower, and
-        --   nothing here can decouple the two.
+        -- Wheel still couples braking and sustained rate: full deflection
+        -- settles at about 1/gain deg/s. NAV does not — it tracks a rate
+        -- command capped at navMaxYawRate, so raising this gain still
+        -- stops harder without slowing compass tracking at cruise.
         -- At 0.10: full braking above ~10 deg/s, full wheel holds a
-        -- ~10 deg/s turn (360 in ~34 s). Lower for quicker turns that
-        -- coast longer; raise if the hull still drifts after centering,
-        -- but back off if it hunts around straight.
+        -- ~10 deg/s turn (360 in ~34 s). Lower for quicker wheel turns
+        -- that coast longer; raise if the hull still drifts after
+        -- centering, but back off if it hunts around straight.
         yawDampGain = 0.10,
+
+        -- NAV compass: yaw-rate (deg/s) per degree of bearing error
+        -- outside steerDeadband. At 0.25 a 40° offset wants 10 deg/s,
+        -- matching today's full-wheel rate. Raise if a distant compass
+        -- (almost a heading bug) still feels lazy; the close-in needle
+        -- is handled by navLosGain.
+        navBearingGain = 0.25,
+
+        -- NAV compass: extra yaw-rate matching the needle's geometric
+        -- swing, (v * sin(bearing) / range) in deg/s. 1.0 keeps the
+        -- nose on a moving compass; raise toward 1.5 if cruise still
+        -- lags a nearby lodestone. 0 disables lead and leaves only P.
+        navLosGain = 1.0,
+
+        -- Floor on nav-table range (m) so the LOS term cannot explode
+        -- over the target. Tune near the tightest turn this hull makes.
+        navMinRange = 12.0,
+
+        -- Pull the speed lever to detent 0 when NAV ground range is at
+        -- or inside this (metres). Height is not counted. Direct-to
+        -- only; a holding pattern does not arrive. Stays parked while
+        -- a live target is that close; clear the compass to leave.
+        -- Wheel-only has no destination and is not affected.
+        navArriveRange = 50.0,
+
+        -- true = clockwise holding pattern (target on the right, +90°).
+        -- false = left-hand orbit. Radius is not commanded: it follows
+        -- speed (faster = larger circle). Click PTN to orbit; compass
+        -- insert always returns to direct-to.
+        navHoldClockwise = true,
+
+        -- NAV yaw-rate ceiling (deg/s) at SHIP.LNAV.maxSpeed. Lerps
+        -- from 1/yawDampGain at a stop up to this at cruise, so slow
+        -- flight keeps today's wheel-like cap and high speed can
+        -- match a swinging compass. 28 deg/s at 6.5 m/s is a ~13 m
+        -- radius; raise if cruise still flies past the needle.
+        navMaxYawRate = 28.0,
 
         -- Deg/s treated as already stopped. Keep just above gimbal noise.
         -- This is the residual creep the damper will not chase out, so
@@ -89,6 +115,13 @@ SHIP = {
         -- Positive RSC RPM is backward on this hull; invert so +command is forward.
         invertLeft = true,
         invertRight = true,
+
+        -- Compass heading of the nav table's 0° mark / block arrow
+        -- (0 = north, 90 = east, 180 = south, 270 = west). Added to
+        -- getHeading() after the south→north conversion and to
+        -- getBearing(), then wrapped. This table's 0 points west;
+        -- 0 if the arrow already faces north with the hull.
+        navTableYaw = 90,
 
         -- Flip if a positive bearing (target / wheel to the right)
         -- yaws the hull left. Independent of invertLeft/Right.

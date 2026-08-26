@@ -45,34 +45,53 @@ function Propeller:setSpeed(speed, batch)
     end)
 end
 
--- Mix a normalized speed request [0, 1] and steering request [-1, 1]
--- into left/right propeller RPM. Steering is preserved; common-mode
--- (forward) thrust is reduced when the pair would exceed maxRpm.
---
 -- Sign: +steering is a right turn (left faster / right slower).
 -- invertSteer flips that if the hull yaws the wrong way.
-function mixDifferentialThrust(speedReq, steerReq, opts)
-    opts = opts or SHIP.LNAV
-    local forwardRpm = opts.forwardRpm
-    local turnRpm = opts.turnRpm
-    local maxRpm = opts.maxRpm
-    local invertSteer = opts.invertSteer
-
-    speedReq = Range:new(0, 1):clamp(speedReq or 0)
+local function clampedDifferential(steerReq, opts)
     local requestedSteer = Range:new(-1, 1):clamp(steerReq or 0)
     local steer = requestedSteer
-    if invertSteer then
+    if opts.invertSteer then
         steer = -steer
     end
-
-    local requestedCommon = speedReq * forwardRpm
-    local differential = steer * turnRpm
+    local maxRpm = opts.maxRpm
+    local differential = steer * (opts.turnRpm or 0)
     local absDiff = math.abs(differential)
     if absDiff > maxRpm then
         differential = differential > 0 and maxRpm or -maxRpm
         absDiff = maxRpm
     end
+    return requestedSteer, differential, absDiff
+end
 
+-- Fraction of forwardRpm still available after steering takes its
+-- share of the RPM budget. 1 when straight; 0 at a full pivot when
+-- turnRpm >= maxRpm. Linear in |steer|: this is the speed we give up.
+function mixSpeedHeadroom(steerReq, opts)
+    opts = opts or SHIP.LNAV
+    local _, _, absDiff = clampedDifferential(steerReq, opts)
+    local maxCommon = opts.maxRpm - absDiff
+    if maxCommon < 0 then
+        maxCommon = 0
+    end
+    local forwardRpm = opts.forwardRpm
+    if not (forwardRpm > 0) then
+        return 0
+    end
+    return Range:new(0, 1):clamp(maxCommon / forwardRpm)
+end
+
+-- Mix a normalized speed request [0, 1] and steering request [-1, 1]
+-- into left/right propeller RPM. Steering is preserved; common-mode
+-- (forward) thrust is reduced when the pair would exceed maxRpm.
+function mixDifferentialThrust(speedReq, steerReq, opts)
+    opts = opts or SHIP.LNAV
+    local forwardRpm = opts.forwardRpm
+    local maxRpm = opts.maxRpm
+
+    speedReq = Range:new(0, 1):clamp(speedReq or 0)
+    local requestedSteer, differential, absDiff = clampedDifferential(steerReq, opts)
+
+    local requestedCommon = speedReq * forwardRpm
     local maxCommon = maxRpm - absDiff
     if maxCommon < 0 then
         maxCommon = 0
