@@ -50,9 +50,9 @@ function stepClock(state, defaultDt, maxDt)
     return dt
 end
 
--- Shared burner amount range, used by both the BurnerBank actuator (flight.lua)
--- and the VerticalSpeedHold controller (autopilot.lua) so the controller's
--- clamping/anti-windup math always agrees with what the actuator accepts.
+-- Shared per-burner amount range. BurnerBank (flight.lua) splits a total
+-- heated-volume command across burners, clamping each to this range so
+-- the peripheral's accepted 5-500 m³ scroll never sees an out-of-range write.
 BURNER_AMOUNT_RANGE = Range:new(5, 500)
 
 -- True for a real number (rejects nil, NaN, and non-numbers).

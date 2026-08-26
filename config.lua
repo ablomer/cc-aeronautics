@@ -22,7 +22,7 @@ SHIP = {
     LNAV = {
         -- Target velocity (m/s) at throttle lever 15. Lever 0 is stop.
         -- Tune after a flight if this is short of the hull's cruise.
-        maxSpeed = 5.0,
+        maxSpeed = 6.5,
 
         -- Common-mode RPM at a speed request of 1.0. Fly straight at lever
         -- 15: if hold cannot reach maxSpeed, raise this. Leave headroom
@@ -32,7 +32,7 @@ SHIP = {
         -- turn at cruise drops common-mode to 80 and the display shows
         -- CUT. Deliberate: braking authority matters more than the last
         -- 16 RPM of forward thrust while turning.
-        forwardRpm = 96,
+        forwardRpm = 64,
 
         -- Differential RPM at a steering request of ±1.0. One side gets
         -- +turnRpm and the other -turnRpm on a pivot (speed request 0).
@@ -42,13 +42,13 @@ SHIP = {
         -- overshoot when centering; lower if the hull snaps too hard.
         -- Above maxRpm - forwardRpm the mixer starts shedding forward
         -- thrust in hard turns and the display shows CUT.
-        turnRpm = 48,
+        turnRpm = 28,
 
         -- Actuator ceiling sent to each propeller RSC. Create clamps
         -- setTargetSpeed to [-256, 256]; this is the software cap the
         -- mixer and Propeller objects share. Measure nothing — it is
         -- the hardware limit unless a gearbox needs a lower software cap.
-        maxRpm = 144,
+        maxRpm = 92,
 
         -- Relative bearing (deg) ignored as noise. Measure wheel slop
         -- at rest; keep this just above the idle wobble.
@@ -109,6 +109,35 @@ SHIP = {
         -- landed and cuts heat. Measure at rest, not in the hover.
         touchdownAgl = 2.0,
 
+        -- Gravitational force on the hull (pN). F_down in the heated-volume
+        -- formula: V = F_down * e^((H - 63) / 250) / 15.63. Read from the
+        -- ship's physics overlay. Too high settles above the lever target;
+        -- too low settles below it.
+        downwardForce = 23688.50,
+
+        -- Lowest cruise Y the burner lever commands (notch 1). Notch 15 is
+        -- the max Y the balloon can hold given capacity and downwardForce.
+        -- Notch 0 is land. Tune to the lowest altitude this hull should hover.
+        minAltitude = 92,
+
+        -- Heat-command slew (m³/s) at minAltitude. Notch-1..15 interpolates
+        -- this .. maxVolumeRate against current Y between minAltitude and
+        -- the balloon's max Y. Faster at high altitude, slower down low.
+        minVolumeRate = 5.0,
+
+        -- Heat-command slew (m³/s) at the balloon's max Y (lever 15).
+        maxVolumeRate = 30.0,
+
+        -- Heat-command slew (m³/s) used when dumping heat near the
+        -- ground: any optical hasHit() and the command is decreasing.
+        -- Takeoff (heat increasing) keeps the cruise lerp even with a hit.
+        landingVolumeRate = 1.0,
+
+        -- Lowest total heated volume (m³) the burners may command. Held
+        -- on the ground after landing so the envelope stays inflated
+        -- enough to keep the hull upright. Tune just below lift-off.
+        minHeatedVolume = 1250.0,
+
         -- Actuator ceiling sent to the vertical propeller RSC. Create
         -- clamps setTargetSpeed to [-256, 256]; leftover climb boost
         -- saturates at this cap. Lower it if a gearbox needs a software
@@ -160,17 +189,20 @@ PERIPHERALS = {
     },
 
     -- ------------------------
-    -- VNAV: vertical navigation (altitude hold + landing)
+    -- VNAV: vertical navigation (altitude hold, landing, terrain)
     -- ------------------------
     VNAV = {
         -- type: throttle_lever
-        -- Lever 1-15 maps linearly onto the altitude range; detent 0 is land
-        -- (fixed sink, then optical flare).
+        -- Detent 0 is land (slew heat toward minimum). The cruise slew
+        -- lerp still applies until an optical hasHit() while descending,
+        -- which switches to landingVolumeRate. Takeoff is not limited.
+        -- Positions 1-15 interpolate minAltitude .. balloon max altitude.
         burnerLever = "throttle_lever_1",
 
         -- type: Create rotational speed controller
         -- Drives all vertical propellers together (single shared RSC).
-        -- Leftover +up boost when VerticalSpeedHold is short of desiredVS.
+        -- Parked at 0: vertical speed is a consequence of heat-volume
+        -- slew, not leftover VS-boost on this RSC.
         -- setTargetSpeed is integer RPM in [-256, 256].
         verticalPropellerSpeedController = "Create_RotationSpeedController_2",
     },

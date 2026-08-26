@@ -39,14 +39,13 @@ local verticalPropellers = Propeller:new(PERIPHERALS.VNAV.verticalPropellerSpeed
 })
 local opticalSensors = findPeripherals("optical_sensor")
 
-local MAX_POWER = 15  -- throttle / burner lever notches (still 0-15)
+local MAX_POWER = 15  -- throttle lever notches (0-15)
 
 local velocityHold = VelocityHold:new(velocitySensor)
 
 local burnerBank = BurnerBank:new(burners)
-local verticalSpeedHold = VerticalSpeedHold:new(altitudeSensor)
-local altitudeHold = AltitudeHold:new()
-local lastBurnerLever = nil  -- forces target recompute + capture on first tick
+local altitudeHold = AltitudeHold:new(altitudeSensor)
+local volumeCaptured = false
 local landedLatched = false  -- stays true after touchdown until the lever leaves 0
 
 -- ------------------------
@@ -66,15 +65,6 @@ local pitchSign = SHIP.ATT.invertPitch and -1 or 1
 local display = FlightDisplay:new()
 local audio = ShipAudio:new(findOptionalPeripherals("speaker"))
 
--- Maps the 1-15 burner lever position to a target altitude within the
--- operational range. Lever 0 is the landing detent and does not use this
--- mapping. MAX_ALTITUDE (315) is used instead of the sensor's true ceiling
--- (320) to leave braking margin; see VerticalSpeedHold.HARD_CEILING.
-local function leverToTargetAltitude(leverPosition)
-    local span = AltitudeHold.MAX_ALTITUDE - AltitudeHold.MIN_ALTITUDE
-    return AltitudeHold.MIN_ALTITUDE + (leverPosition / MAX_POWER) * span
-end
-
 -- Maps the 0-15 throttle lever onto 0 .. SHIP.LNAV.maxSpeed. Detent 0 is stop.
 local function leverToTargetVelocity(leverPosition)
     return (leverPosition / MAX_POWER) * SHIP.LNAV.maxSpeed
@@ -86,19 +76,12 @@ local function controlUpdate()
     local batch = WriteBatch:new()
 
     local burnerLeverState = burnerLever.getState()
-    local isFirstTick = lastBurnerLever == nil
     local landing = burnerLeverState == 0
 
-    if isFirstTick then
-        verticalSpeedHold:capture(burnerBank.lastAmount)
+    if not volumeCaptured then
+        altitudeHold:capture(burnerBank:sumTargetAmounts())
+        volumeCaptured = true
     end
-
-    -- Retarget whenever the lever moves in hold (including the first tick
-    -- if we start above detent 0). Landing does not use an altitude target.
-    if not landing and (isFirstTick or burnerLeverState ~= lastBurnerLever) then
-        altitudeHold:setTarget(leverToTargetAltitude(burnerLeverState))
-    end
-    lastBurnerLever = burnerLeverState
 
     local agl, hasGround = readWorstAgl(opticalSensors)
     if not landing then
@@ -106,6 +89,12 @@ local function controlUpdate()
     elseif isTouchdown(agl, hasGround) then
         landedLatched = true
     end
+
+    local capacity = burnerBank:balloonCapacity()
+    local minVolume, maxVolume = burnerBank:volumeLimits(capacity)
+    local minAlt = SHIP.VNAV.minAltitude
+    local maxAlt = altitudeForHeatedVolume(maxVolume)
+    maxAlt = Range:new(minAlt, AltitudeHold.HARD_CEILING):clamp(maxAlt)
 
     -- Throttle lever is always a velocity setpoint. Detent 0 parks the
     -- speed loop. Steering comes from the nav table when it has a
@@ -125,50 +114,36 @@ local function controlUpdate()
     local mix = thrustMixer:apply(speedRequest, steerRequest, batch)
     local heading = readStandardHeading(navigationTable)
 
-    local desiredVS
+    local targetAltitude = nil
+    if not landing then
+        targetAltitude = leverToTargetAltitude(burnerLeverState, minAlt, maxAlt, MAX_POWER)
+    end
+
     local vnavMode
+    local volume
     if landedLatched then
-        -- Hull is on the ground: cut heat and props so the VS loop does
-        -- not hunt around DVS 0. Stays latched until the lever leaves 0.
-        desiredVS = 0
+        -- Hull is on the ground: park heat at the upright floor and
+        -- cut props. Stays latched until the lever leaves 0.
         vnavMode = "landed"
-        burnerBank:setAmount(verticalSpeedHold:holdOff(), batch)
+        volume = altitudeHold:holdOff(minVolume)
+        burnerBank:setTotal(volume, batch)
         verticalPropellers:setSpeed(0, batch)
-    elseif landing then
-        desiredVS = landingDesiredVS(agl, hasGround)
-        vnavMode = hasGround and "flare" or "land"
-        burnerBank:setAmount(verticalSpeedHold:read(desiredVS), batch)
-        local propRpm = 0
-        if not verticalSpeedHold.fault then
-            propRpm = verticalPropRpm(
-                verticalSpeedHold.lastRateError,
-                verticalSpeedHold.slewLimited,
-                hasGround
-            )
-        end
-        verticalPropellers:setSpeed(propRpm, batch)
     else
-        local height = altitudeSensor.getHeight()
-        local altRate = altitudeHold:desiredRate(height)
-        local terrainVS = terrainClimbVS(agl, hasGround)
-        -- terrainVS is 0 when nothing has hit (or AGL is at/above clearance).
-        -- Do not max() against that 0: it would block descents and falsely
-        -- report TERRAIN whenever altitude hold asks to go down.
-        desiredVS = altRate
-        if terrainVS > 0 then
-            desiredVS = math.max(altRate, terrainVS)
+        volume = altitudeHold:read(
+            targetAltitude, minVolume, maxVolume, agl, hasGround, landing, maxAlt
+        )
+        burnerBank:setTotal(volume, batch)
+        if landing then
+            vnavMode = hasGround and "flare" or "land"
+        elseif altitudeHold.terrain then
+            vnavMode = "terrain"
+        else
+            vnavMode = "hold"
         end
-        vnavMode = (terrainVS > 0 and terrainVS > altRate) and "terrain" or "hold"
-        burnerBank:setAmount(verticalSpeedHold:read(desiredVS), batch)
-        local propRpm = 0
-        if not verticalSpeedHold.fault then
-            propRpm = verticalPropRpm(
-                verticalSpeedHold.lastRateError,
-                verticalSpeedHold.slewLimited,
-                hasGround
-            )
-        end
-        verticalPropellers:setSpeed(propRpm, batch)
+        -- Vertical speed is a consequence of heat-volume slew, not a
+        -- prop loop. Park the vertical RSC so leftover VS-boost cannot
+        -- keep the hull climbing after the heat command has settled.
+        verticalPropellers:setSpeed(0, batch)
     end
 
     local lnavMode
@@ -212,16 +187,18 @@ local function controlUpdate()
         speedReduced   = mix.speedReduced,
         propeller1Rpm  = mix.leftRpm,
         propeller2Rpm  = mix.rightRpm,
-        altitude       = verticalSpeedHold.lastHeight,
-        targetAltitude = altitudeHold.target,
+        altitude       = altitudeHold.lastHeight,
+        targetAltitude = targetAltitude,
         landing        = landing,
         vnavMode       = vnavMode,
-        verticalSpeed  = verticalSpeedHold.lastVerticalSpeed,
-        desiredVS      = desiredVS,
+        verticalSpeed  = altitudeHold.lastVerticalSpeed,
+        targetVolume   = altitudeHold.lastTargetVolume,
+        currentVolume  = burnerBank.lastAmount,
         agl            = hasGround and agl or nil,
         verticalPropRpm   = verticalPropellers.lastSpeed,
-        burnerAmount   = burnerBank.lastAmount,
-        altitudeFault  = verticalSpeedHold.fault,
+        balloonCapacity = capacity,
+        volumeSlewRate = altitudeHold.lastSlewRate,
+        altitudeFault  = altitudeHold.fault,
         pitch          = pitchHold.lastPitch,
         pitchRate      = pitchHold.lastPitchRate,
         stabAngle      = stabilizer.lastAngle,

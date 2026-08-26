@@ -33,17 +33,17 @@ local ATT_MODE = {
 
 -- Four FCU windows. Splits are the inner verticals; each WIN is the
 -- content range between them (or the outer border). The mode section
--- under the windows is two panes: LNAV under SPD+BRG, VNAV under ALT+V/S.
+-- under the windows is two panes: LNAV under SPD+BRG, VNAV under ALT+HEAT.
 local SPLITS = {13, 25, 38}
 local MODE_SPLIT = 25
 local WIN = {
     {x = 2,  w = 11}, -- SPD
     {x = 14, w = 11}, -- BRG
     {x = 26, w = 12}, -- ALT
-    {x = 39, w = 12}, -- V/S
+    {x = 39, w = 12}, -- HEAT
 }
 local LNAV_WIN = {x = 2,  w = 23} -- under SPD + BRG
-local VNAV_WIN = {x = 26, w = 25} -- under ALT + V/S
+local VNAV_WIN = {x = 26, w = 25} -- under ALT + HEAT
 
 local function makeLine(left, fill, right, junctions)
     local chars = {}
@@ -159,14 +159,16 @@ function FlightDisplay:update(state)
     --   propeller1Rpm: number (applied left RPM)
     --   propeller2Rpm: number (applied right RPM)
     --   altitude: number (current height, m)
-    --   targetAltitude: number (target height, m; unused when landing)
+    --   targetAltitude: number|nil (target height, m; nil when landing)
     --   landing: boolean (burner lever detent 0)
     --   vnavMode: "hold"|"land"|"flare"|"landed"|"terrain"
-    --   verticalSpeed: number (m/s)
-    --   desiredVS: number (commanded vertical speed, m/s)
+    --   verticalSpeed: number (m/s, display only)
+    --   targetVolume: number|nil (formula / landing heat target, m³)
+    --   currentVolume: number (commanded heated volume, m³)
     --   agl: number|nil (worst-case optical AGL, m; nil when no sensor hasHit)
     --   verticalPropRpm: number (last RPM sent to the vertical prop RSC)
-    --   burnerAmount: number (last commanded burner amount, 5-500)
+    --   balloonCapacity: number (balloon envelope capacity, m³)
+    --   volumeSlewRate: number|nil (current heat-command slew limit, m³/s)
     --   altitudeFault: boolean
     --   pitch: number|nil (gimbal pitch, deg)
     --   stabAngle: number|nil (stabilizer bearing angle, deg)
@@ -178,7 +180,7 @@ function FlightDisplay:update(state)
     local t = self.term
     t.setBackgroundColor(COL_BG)
 
-    local spdWin, brgWin, altWin, vsWin = WIN[1], WIN[2], WIN[3], WIN[4]
+    local spdWin, brgWin, altWin, heatWin = WIN[1], WIN[2], WIN[3], WIN[4]
     local src = state.steerSource or "WHEEL"
 
     -- Row 1: FCU top
@@ -189,7 +191,7 @@ function FlightDisplay:update(state)
     writeWin(t, spdWin, 2, " SPD", COL_LABEL, "left")
     writeWin(t, brgWin, 2, " BRG", COL_LABEL, "left")
     writeWin(t, altWin, 2, " ALT", COL_LABEL, "left")
-    writeWin(t, vsWin,  2, " V/S", COL_LABEL, "left")
+    writeWin(t, heatWin, 2, " HEAT", COL_LABEL, "left")
 
     -- Row 3: selected / target
     drawSplitRow(t, 3, SPLITS)
@@ -203,12 +205,16 @@ function FlightDisplay:update(state)
     else
         writeWin(t, brgWin, 3, "  ---", COL_SELECTED, "right")
     end
-    if state.landing then
+    if state.targetAltitude == nil then
         writeWin(t, altWin, 3, "---.-", COL_SELECTED, "right")
     else
-        writeWin(t, altWin, 3, string.format("%5.1f", state.targetAltitude or 0), COL_SELECTED, "right")
+        writeWin(t, altWin, 3, string.format("%5.1f", state.targetAltitude), COL_SELECTED, "right")
     end
-    writeWin(t, vsWin, 3, string.format("%+5.2f", state.desiredVS or 0), COL_SELECTED, "right")
+    if state.targetVolume == nil then
+        writeWin(t, heatWin, 3, "  ---", COL_SELECTED, "right")
+    else
+        writeWin(t, heatWin, 3, string.format("%5.0f", state.targetVolume), COL_SELECTED, "right")
+    end
 
     -- Row 4: actual
     drawSplitRow(t, 4, SPLITS)
@@ -216,12 +222,12 @@ function FlightDisplay:update(state)
     writeWin(t, brgWin, 4, string.format("%+5.0f", state.relativeBearing or 0), COL_VALUE, "right")
     local altColor = state.altitudeFault and colors.red or COL_VALUE
     writeWin(t, altWin, 4, string.format("%5.1f", state.altitude or 0), altColor, "right")
-    writeWin(t, vsWin, 4, string.format("%+5.2f", state.verticalSpeed or 0), COL_VALUE, "right")
+    writeWin(t, heatWin, 4, string.format("%5.0f", state.currentVolume or 0), COL_VALUE, "right")
 
     -- Row 5: close the four windows; LNAV|VNAV split continues
     drawBorderLine(t, 5, BORDER_FCU_MODES)
 
-    -- Row 6: modes — LNAV under SPD+BRG, VNAV under ALT+V/S
+    -- Row 6: modes — LNAV under SPD+BRG, VNAV under ALT+HEAT
     drawSplitRow(t, 6, {MODE_SPLIT})
     local lnav = LNAV_MODE[state.lnavMode] or LNAV_MODE.hold
     writeLabel(t, LNAV_WIN.x + 1, 6, "LNAV")
@@ -231,11 +237,17 @@ function FlightDisplay:update(state)
     local vnav = VNAV_MODE[state.vnavMode] or VNAV_MODE.hold
     writeLabel(t, VNAV_WIN.x + 1, 6, "VNAV")
     writeAt(t, VNAV_WIN.x + 6, 6, vnav.label, vnav.color)
+    writeLabel(t, VNAV_WIN.x + 16, 6, "LIM")
+    if state.volumeSlewRate == nil then
+        writeAt(t, VNAV_WIN.x + 20, 6, "  --")
+    else
+        writeAt(t, VNAV_WIN.x + 20, 6, string.format("%4.1f", state.volumeSlewRate))
+    end
 
     -- Row 7: modes to LNAV/VNAV detail panes
     drawBorderLine(t, 7, BORDER_MODES_DETAIL)
 
-    -- Row 8: HDG/YAW under LNAV, AGL/burner under VNAV
+    -- Row 8: HDG/YAW under LNAV, AGL/capacity under VNAV
     drawSplitRow(t, 8, {MODE_SPLIT})
     local lnavLblL, lnavValL = LNAV_WIN.x + 1, LNAV_WIN.x + 5
     local lnavLblR, lnavValR = LNAV_WIN.x + 11, LNAV_WIN.x + 15
@@ -257,8 +269,12 @@ function FlightDisplay:update(state)
     else
         writeAt(t, VNAV_WIN.x + 5, 8, "   --")
     end
-    writeLabel(t, VNAV_WIN.x + 14, 8, "BURN")
-    writeAt(t, VNAV_WIN.x + 19, 8, string.format("%4.0f", state.burnerAmount or 0))
+    writeLabel(t, VNAV_WIN.x + 14, 8, "VOL")
+    if state.balloonCapacity == nil then
+        writeAt(t, VNAV_WIN.x + 18, 8, "  --")
+    else
+        writeAt(t, VNAV_WIN.x + 18, 8, string.format("%5.0f", state.balloonCapacity))
+    end
 
     -- Row 9: left/right props under LNAV, vertical prop under VNAV
     drawSplitRow(t, 9, {MODE_SPLIT})
@@ -271,6 +287,12 @@ function FlightDisplay:update(state)
     end
     writeLabel(t, VNAV_WIN.x + 1, 9, "VP")
     writeAt(t, VNAV_WIN.x + 5, 9, string.format("%5d", math.floor((state.verticalPropRpm or 0) + 0.5)))
+    writeLabel(t, VNAV_WIN.x + 14, 9, "V/S")
+    if state.verticalSpeed ~= nil then
+        writeAt(t, VNAV_WIN.x + 18, 9, string.format("%+5.1f", state.verticalSpeed))
+    else
+        writeAt(t, VNAV_WIN.x + 18, 9, "  --")
+    end
 
     -- Row 10: close the detail panes
     drawBorderLine(t, 10, BORDER_DETAIL_ATT)

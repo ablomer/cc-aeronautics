@@ -123,31 +123,117 @@ function DifferentialThrustMixer:apply(speedReq, steerReq, batch)
     return result
 end
 
--- BurnerBank fans one commanded amount out to every hot air burner in the
--- collection. Clamping happens here at the actuator boundary so callers
--- never have to match the peripheral's accepted range. Identical repeats
--- are skipped: setTargetAmount yields a server tick per burner.
+-- BurnerBank fans a total heated-volume command out across every hot air
+-- burner. Each burner gets floor(total / n); the last burner gets the
+-- remainder so the bank can step the envelope by 1 m³. Per-burner values
+-- are clamped to BURNER_AMOUNT_RANGE. Identical per-burner repeats are
+-- skipped: setTargetAmount yields a server tick per burner.
 BurnerBank = {}
+
+-- Greater of the hardware per-burner floor and SHIP.VNAV.minHeatedVolume.
+local function configuredMinTotal(n)
+    local minVolume = n * BURNER_AMOUNT_RANGE.min
+    local configured = SHIP.VNAV.minHeatedVolume
+    if type(configured) == "number" and configured > minVolume then
+        minVolume = configured
+    end
+    return minVolume
+end
 
 function BurnerBank:new(burners)
     local t = setmetatable({}, { __index = BurnerBank })
     t.burners = burners
-    t.lastAmount = BURNER_AMOUNT_RANGE.min
-    t.lastCommanded = nil  -- force a write on the first setAmount
+    t.lastAmount = configuredMinTotal(#burners)
+    t.lastCommanded = {}  -- per-burner; missing keys force a write
     return t
 end
 
-function BurnerBank:setAmount(amount, batch)
-    amount = BURNER_AMOUNT_RANGE:clamp(amount)
-    self.lastAmount = amount
-    if self.lastCommanded ~= nil and amount == self.lastCommanded then
+-- Envelope capacity from one burner (they share the balloon). 0 if none.
+function BurnerBank:balloonCapacity()
+    local burner = self.burners[1]
+    if burner == nil or burner.getBalloonCapacity == nil then
+        return 0
+    end
+    local cap = burner.getBalloonCapacity()
+    if type(cap) ~= "number" or cap ~= cap or cap < 0 then
+        return 0
+    end
+    return cap
+end
+
+-- Inclusive total-volume limits for this bank. Capacity 0 (no balloon
+-- reading) falls back to the sum of per-burner maxima. The floor is the
+-- greater of the hardware per-burner minimum and SHIP.VNAV.minHeatedVolume
+-- so the hull stays upright on the ground.
+function BurnerBank:volumeLimits(capacity)
+    local n = #self.burners
+    if n < 1 then
+        return 0, 0
+    end
+    local minVolume = configuredMinTotal(n)
+    local maxVolume = n * BURNER_AMOUNT_RANGE.max
+    if type(capacity) == "number" and capacity > 0 then
+        maxVolume = math.min(maxVolume, capacity)
+    end
+    if maxVolume < minVolume then
+        maxVolume = minVolume
+    end
+    return minVolume, maxVolume
+end
+
+function BurnerBank:sumTargetAmounts()
+    local total = 0
+    for _, burner in ipairs(self.burners) do
+        local amt = burner.getTargetAmount()
+        if type(amt) == "number" and amt == amt then
+            total = total + amt
+        end
+    end
+    return total
+end
+
+local function splitVolume(total, n)
+    total = math.floor(total + 0.5)
+    local minTotal = configuredMinTotal(n)
+    local maxTotal = n * BURNER_AMOUNT_RANGE.max
+    if total < minTotal then
+        total = minTotal
+    elseif total > maxTotal then
+        total = maxTotal
+    end
+    local base = math.floor(total / n)
+    local remainder = total - base * n
+    local amounts = {}
+    for i = 1, n do
+        local amt = base
+        if i == n then
+            amt = base + remainder
+        end
+        amounts[i] = BURNER_AMOUNT_RANGE:clamp(amt)
+    end
+    return amounts
+end
+
+function BurnerBank:setTotal(total, batch)
+    local n = #self.burners
+    if n < 1 then
+        self.lastAmount = 0
         return
     end
-    self.lastCommanded = amount
-    for _, burner in ipairs(self.burners) do
-        WriteBatch.defer(batch, function()
-            burner.setTargetAmount(amount)
-        end)
+    local amounts = splitVolume(total, n)
+    local commanded = 0
+    for i = 1, n do
+        commanded = commanded + amounts[i]
+    end
+    self.lastAmount = commanded
+    for i, burner in ipairs(self.burners) do
+        local amt = amounts[i]
+        if self.lastCommanded[i] ~= amt then
+            self.lastCommanded[i] = amt
+            WriteBatch.defer(batch, function()
+                burner.setTargetAmount(amt)
+            end)
+        end
     end
 end
 
