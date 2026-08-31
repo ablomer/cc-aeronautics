@@ -22,13 +22,13 @@ SHIP = {
     LNAV = {
         -- Target velocity (m/s) at throttle lever 15. Lever 0 is stop.
         -- Tune after a flight if this is short of the hull's cruise.
-        maxSpeed = 6.5,
+        maxSpeed = 7.0,
 
         -- Common-mode RPM at a speed request of 1.0 (straight flight).
         -- Match maxRpm so a full lever can use the whole engine. Turning
         -- takes RPM from this pool first; the speed loop's target and
         -- ceiling scale with whatever is left (see mixSpeedHeadroom).
-        forwardRpm = 72,
+        forwardRpm = 256,
 
         -- Differential RPM at a steering request of ±1.0. Match maxRpm
         -- so a full turn can use the whole engine (one side +max, the
@@ -36,13 +36,13 @@ SHIP = {
         -- steer request leaves half the RPM for speed. This is yaw
         -- torque, so it also sets how hard the damper can brake a
         -- residual spin. Lower if small corrections feel like a pivot.
-        turnRpm = 72,
+        turnRpm = 256,
 
-        -- Actuator ceiling sent to each propeller RSC. Create clamps
-        -- setTargetSpeed to [-256, 256]; this is the software cap the
-        -- mixer and Propeller objects share. Measure nothing — it is
-        -- the hardware limit unless a gearbox needs a lower software cap.
-        maxRpm = 72,
+        -- Actuator ceiling sent to each propeller motor. Create
+        -- Addition clamps setSpeed to [-256, 256]; this is the software
+        -- cap the mixer and Propeller objects share. Measure nothing —
+        -- it is the hardware limit unless a gearbox needs a lower cap.
+        maxRpm = 256,
 
         -- Relative bearing (deg) ignored as noise. Measure wheel slop
         -- at rest; keep this just above the idle wobble.
@@ -112,9 +112,9 @@ SHIP = {
         -- if the props chatter around straight.
         yawDampDeadband = 0.5,
 
-        -- Positive RSC RPM is backward on this hull; invert so +command is forward.
-        invertLeft = true,
-        invertRight = true,
+        -- Positive motor RPM is backward on this hull; invert so +command is forward.
+        invertLeft = false,
+        invertRight = false,
 
         -- Compass heading of the nav table's 0° mark / block arrow
         -- (0 = north, 90 = east, 180 = south, 270 = west). Added to
@@ -125,7 +125,7 @@ SHIP = {
 
         -- Flip if a positive bearing (target / wheel to the right)
         -- yaws the hull left. Independent of invertLeft/Right.
-        invertSteer = true,
+        invertSteer = false,
 
         -- Sign of gimbal wy against a right turn. Independent of
         -- invertSteer: this is sensor polarity, not propeller wiring,
@@ -164,7 +164,7 @@ SHIP = {
         -- Heat-command slew (m³/s) used when dumping heat near the
         -- ground: any optical hasHit() and the command is decreasing.
         -- Takeoff (heat increasing) keeps the cruise lerp even with a hit.
-        landingVolumeRate = 1.0,
+        landingVolumeRate = 2.0,
 
         -- Lowest total heated volume (m³) the burners may command. Held
         -- on the ground after landing so the envelope stays inflated
@@ -211,13 +211,13 @@ PERIPHERALS = {
     -- LNAV: speed hold + heading (shared left/right props)
     -- ------------------------
     LNAV = {
-        -- type: Create rotational speed controller
-        -- Drives the right propeller. setTargetSpeed is integer RPM in [-256, 256].
-        rightPropellerSpeedController = "Create_RotationSpeedController_0",
+        -- type: Create Addition electric_motor
+        -- Drives the right propeller. setSpeed is integer RPM in [-256, 256].
+        rightPropellerMotor = "electric_motor_3",
 
-        -- type: Create rotational speed controller
-        -- Drives the left propeller. setTargetSpeed is integer RPM in [-256, 256].
-        leftPropellerSpeedController = "Create_RotationSpeedController_1",
+        -- type: Create Addition electric_motor
+        -- Drives the left propeller. setSpeed is integer RPM in [-256, 256].
+        leftPropellerMotor = "electric_motor_2",
 
         -- type: throttle_lever
         -- Velocity setpoint: position 0-15 maps onto 0 .. SHIP.LNAV.maxSpeed.

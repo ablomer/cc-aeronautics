@@ -2,9 +2,12 @@ require("util")
 require("config")
 require("controls")
 
--- Propeller drives a Create rotational speed controller.
--- setTargetSpeed commands RPM directly. Range is integer [-256, 256];
--- the peripheral clamps anything outside that.
+-- Propeller drives a Create kinetic actuator: a Create Addition
+-- electric motor (setSpeed) or a rotational speed controller
+-- (setTargetSpeed). Both take integer RPM in [-256, 256]. Motor
+-- setSpeed throws if called too often; identical repeats are skipped,
+-- and a failed write is retried next tick.
+-- https://github.com/mrh0/createaddition/blob/main/COMPUTERCRAFT.md#electric-motor
 -- https://wiki.createmod.net/users/cc-tweaked-integration/rotational-speed-controller#setTargetSpeed
 Propeller = {}
 Propeller.MAX_RPM = 256
@@ -16,9 +19,26 @@ local function roundRpm(speed)
     return math.ceil(speed - 0.5)
 end
 
+-- Motors expose setSpeed; RSCs expose setTargetSpeed. Detect once
+-- so the 10 Hz loop does not re-probe the method table every write.
+local function bindSpeedSetter(dev)
+    if dev == nil then
+        return nil
+    end
+    if dev.setSpeed ~= nil then
+        return function(rpm)
+            dev.setSpeed(rpm)
+        end
+    end
+    return function(rpm)
+        dev.setTargetSpeed(rpm)
+    end
+end
+
 function Propeller:new(speedControllerId, opts)
     local t = setmetatable({}, { __index = Propeller })
-    t.rsc = peripheral.wrap(speedControllerId)
+    t.actuator = peripheral.wrap(speedControllerId)
+    t.applySpeed = bindSpeedSetter(t.actuator)
     opts = opts or {}
     t.maxRpm = opts.maxRpm or Propeller.MAX_RPM
     t.invert = opts.invert or false
@@ -36,12 +56,16 @@ function Propeller:setSpeed(speed, batch)
         return
     end
     self.lastCommanded = commanded
-    if self.rsc == nil then
+    local apply = self.applySpeed
+    if apply == nil then
         return
     end
-    local rsc = self.rsc
     WriteBatch.defer(batch, function()
-        rsc.setTargetSpeed(commanded)
+        local ok = pcall(apply, commanded)
+        if not ok then
+            -- Rate-limited motor write: retry on the next tick.
+            self.lastCommanded = nil
+        end
     end)
 end
 

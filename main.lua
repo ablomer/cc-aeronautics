@@ -10,11 +10,11 @@ require("controls")
 -- ------------------------
 -- LNAV
 -- ------------------------
-local leftPropeller = Propeller:new(PERIPHERALS.LNAV.leftPropellerSpeedController, {
+local leftPropeller = Propeller:new(PERIPHERALS.LNAV.leftPropellerMotor, {
     maxRpm = SHIP.LNAV.maxRpm,
     invert = SHIP.LNAV.invertLeft,
 })
-local rightPropeller = Propeller:new(PERIPHERALS.LNAV.rightPropellerSpeedController, {
+local rightPropeller = Propeller:new(PERIPHERALS.LNAV.rightPropellerMotor, {
     maxRpm = SHIP.LNAV.maxRpm,
     invert = SHIP.LNAV.invertRight,
 })
