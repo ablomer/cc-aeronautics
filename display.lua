@@ -47,6 +47,10 @@ local VNAV_WIN = {x = 26, w = 25} -- under ALT + HEAT
 
 -- Clickable PTN button (holding pattern). Direct-to never needs a click.
 local PTN_BTN = {x = 3, y = 14, w = 7, text = "[ PTN ]"}
+-- Speaker test. DELAY sits immediately left of CHIME.
+-- SPK count is DELAY.x-7; DELAY is CHIME.x-10; CHIME is 41-49.
+local DELAY_BTN = {x = 31, y = 14, w = 9, text = "[ DELAY ]"}
+local CHIME_BTN = {x = 41, y = 14, w = 9, text = "[ CHIME ]"}
 
 local function makeLine(left, fill, right, junctions)
     local chars = {}
@@ -124,6 +128,49 @@ local function writeWin(term, win, y, text, color, align)
     writeAt(term, x, y, text, color)
 end
 
+local function drawChimeButton(term, speakerCount, active)
+    local spkColor = speakerCount > 0 and COL_HOLD or colors.red
+    writeLabel(term, DELAY_BTN.x - 7, CHIME_BTN.y, "SPK")
+    writeAt(term, DELAY_BTN.x - 3, CHIME_BTN.y, string.format("%2d", speakerCount), spkColor)
+    local chimeFg = COL_LABEL
+    local chimeBg = COL_BG
+    if active then
+        chimeFg = colors.black
+        chimeBg = COL_HOLD
+    elseif speakerCount > 0 then
+        chimeFg = COL_MANUAL
+    end
+    writeAt(term, CHIME_BTN.x, CHIME_BTN.y, CHIME_BTN.text, chimeFg, chimeBg)
+end
+
+local function drawDelayButton(term, delayLeft, speakerCount)
+    local text = DELAY_BTN.text
+    local fg = COL_LABEL
+    local bg = COL_BG
+    if type(delayLeft) == "number" then
+        text = string.format("[ %2d s ] ", math.ceil(delayLeft))
+        if #text > DELAY_BTN.w then
+            text = string.sub(text, 1, DELAY_BTN.w)
+        end
+        fg = colors.black
+        bg = COL_FLARE
+    elseif speakerCount > 0 then
+        fg = COL_MANUAL
+    end
+    writeAt(term, DELAY_BTN.x, DELAY_BTN.y, text, fg, bg)
+end
+
+local function drawAudioError(term, err)
+    local innerW = 49
+    writeAt(term, 2, 15, string.rep(" ", innerW), COL_LABEL, COL_BG)
+    if type(err) == "string" and err ~= "" then
+        if #err > innerW then
+            err = string.sub(err, 1, innerW)
+        end
+        writeAt(term, 2, 15, err, colors.red, COL_BG)
+    end
+end
+
 local PAIR_WIDTH = 5
 
 local function fmtPairNum(fmt, value)
@@ -148,15 +195,31 @@ function FlightDisplay:new()
     return t
 end
 
--- Returns "ptn" when the click is on the holding-pattern button.
+local function hitBtn(btn, x, y)
+    return y == btn.y and x >= btn.x and x < btn.x + btn.w
+end
+
+-- Returns "ptn", "chime", or "delay" when the click is on that button.
 function FlightDisplay:click(x, y)
     if type(x) ~= "number" or type(y) ~= "number" then
         return nil
     end
-    if y == PTN_BTN.y and x >= PTN_BTN.x and x < PTN_BTN.x + PTN_BTN.w then
+    if hitBtn(PTN_BTN, x, y) then
         return "ptn"
     end
+    if hitBtn(DELAY_BTN, x, y) then
+        return "delay"
+    end
+    if hitBtn(CHIME_BTN, x, y) then
+        return "chime"
+    end
     return nil
+end
+
+function FlightDisplay:paintSpeakerTest(speakerCount, chimeActive, delayLeft, err)
+    drawDelayButton(self.term, delayLeft, speakerCount or 0)
+    drawChimeButton(self.term, speakerCount or 0, chimeActive == true)
+    drawAudioError(self.term, err)
 end
 
 function FlightDisplay:update(state)
@@ -191,6 +254,10 @@ function FlightDisplay:update(state)
     --   stabTarget: number (commanded stabilizer angle, deg)
     --   attMode: "level"|"off"|"none"
     --   attFault: boolean
+    --   speakerCount: number (wrapped speaker peripherals)
+    --   chimeActive: boolean (chime clip currently playing)
+    --   chimeDelay: number|nil (seconds remaining on delayed chime)
+    --   audioError: string|nil (last playAudio/decode failure)
     -- }
 
     local t = self.term
@@ -353,4 +420,7 @@ function FlightDisplay:update(state)
         ptnFg = COL_MANUAL
     end
     writeAt(t, PTN_BTN.x, PTN_BTN.y, PTN_BTN.text, ptnFg, ptnBg)
+    drawDelayButton(t, state.chimeDelay, state.speakerCount or 0)
+    drawChimeButton(t, state.speakerCount or 0, state.chimeActive == true)
+    drawAudioError(t, state.audioError)
 end

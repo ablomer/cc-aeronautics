@@ -223,6 +223,7 @@ local function controlUpdate()
         heading        = heading,
         steerSource    = steerSource,
         navPattern     = navPattern,
+        arrived        = arrived,
         navCommandedBearing = cmdBearing,
         relativeBearing = relativeBearing,
         yawRate        = yawRate,
@@ -252,9 +253,13 @@ local function controlUpdate()
         stabRpm        = stabilizer.lastSpeed or 0,
         attMode        = attMode,
         attFault       = pitchHold.fault or (attAvailable and stabilizer.fault),
+        speakerCount   = #audio.speakers,
+        chimeActive    = audio:isPlaying("chime"),
+        chimeDelay     = audio:chimeDelayLeft(),
+        audioError     = audio.lastError,
     }
     display:update(snapshot)
-    audio:update(snapshot)
+    audio:update(snapshot, batch)
     batch:flush()
 end
 
@@ -269,8 +274,25 @@ while true do
     elseif event == "mouse_click" or event == "monitor_touch" then
         -- mouse_click: button, x, y. monitor_touch: side, x, y.
         -- PTN is opt-in only. Direct-to is compass insert, not a click.
-        if display:click(p2, p3) == "ptn" and lastSteerSource == "NAV" then
+        local hit = display:click(p2, p3)
+        if hit == "ptn" and lastSteerSource == "NAV" then
             navPattern = not navPattern
+        elseif hit == "chime" then
+            audio:cancelChimeDelay()
+            local playing = audio:playCue("chime")
+            display:paintSpeakerTest(
+                #audio.speakers, playing, nil, audio.lastError
+            )
+        elseif hit == "delay" then
+            audio:armChime()
+            display:paintSpeakerTest(
+                #audio.speakers,
+                audio:isPlaying("chime"),
+                audio:chimeDelayLeft(),
+                audio.lastError
+            )
         end
+    elseif event == "speaker_audio_empty" then
+        audio:onSpeakerEmpty(p1)
     end
 end

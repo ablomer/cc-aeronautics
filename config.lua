@@ -12,7 +12,7 @@
 --   exactly one: steering_wheel, navigation_table,
 --                velocity_sensor, altitude_sensor, gimbal_sensor
 --   one or more: hot_air_burner, optical_sensor
---   zero or more: speaker (audio is silent if none are attached)
+--   zero or more: speaker (DFPWM callouts from audio/; silent if none)
 --
 -- Each remaining peripheral role is documented with a comment giving
 -- its type and a short description, immediately above the string ID.
@@ -200,6 +200,10 @@ SHIP = {
         -- Flip if a positive stabilizer angle pitches the hull the wrong way.
         invertPitch = false,
     },
+    AUDIO = {
+        -- speaker.playAudio volume, 0.0-3.0. 3.0 is the peripheral max.
+        volume = 1.0,
+    },
 }
 
 PERIPHERALS = {
@@ -218,7 +222,7 @@ PERIPHERALS = {
         -- type: throttle_lever
         -- Velocity setpoint: position 0-15 maps onto 0 .. SHIP.LNAV.maxSpeed.
         -- Detent 0 is stop.
-        throttleLever = "throttle_lever_0",
+        throttleLever = "throttle_lever_2",
     },
 
     -- ------------------------
